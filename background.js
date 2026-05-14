@@ -63,10 +63,20 @@ function autoChooseBest(details) {
   });
 }
 
+// 标记是否访问过快手页面（前置条件：有 cookie 才能调 API）
+function markKuaishouVisited(url) {
+  if (
+    url.includes('.kuaishou.com') &&
+    !url.includes('log') &&
+    !url.includes('stat')
+  ) {
+    chrome.storage.local.set({ kuaishouVisited: true });
+  }
+}
+
 chrome.webRequest.onBeforeRequest.addListener(
   (details) => {
-    // 1. 打印所有请求（调试用，确认后可删除）
-    // console.log('请求详情:', details.url);
+    markKuaishouVisited(details.url);
 
     // 2. 只要包含 .flv 且 URL 还没被处理过就拦截
     if (details.url.includes('.flv') && details.url !== lastUrl) {
@@ -230,6 +240,9 @@ async function checkFollowingLivings() {
   try {
     const { monitorEnabled } = await chrome.storage.sync.get('monitorEnabled');
     if (monitorEnabled === false) return;
+
+    const { kuaishouVisited } = await chrome.storage.local.get('kuaishouVisited');
+    if (!kuaishouVisited) return;
 
     const config = await getConfig();
     const authors = config.followedAuthors;
