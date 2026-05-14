@@ -1,0 +1,67 @@
+<!doctype html>
+<html>
+  <head>
+    <title>设置</title>
+    <meta charset="UTF-8" />
+    <style>
+      body {
+        font-family: sans-serif;
+        padding: 10px;
+        margin: 0;
+      }
+      .header {
+        font-weight: bold;
+        border-bottom: 1px solid #eee;
+        padding-bottom: 8px;
+        margin-bottom: 10px;
+        display: flex;
+        justify-content: space-between;
+      }
+      button {
+        cursor: pointer;
+        border: none;
+        border-radius: 4px;
+        padding: 5px 10px;
+        font-size: 12px;
+      }
+      input {
+        border: 1px solid #eee;
+        width: 320px;
+        padding: 5px;
+        border-radius: 4px;
+      }
+      .input {
+        background: #fff;
+        border: 1px solid #ff8c00;
+        border-radius: 8px;
+        padding: 12px;
+        margin-bottom: 10px;
+        transition: box-shadow 0.2s;
+      }
+
+      .btn-send {
+        background: #ff8c00;
+        color: white;
+        border: none;
+        width: auto;
+        padding: 8px 10px;
+        border-radius: 6px;
+        font-weight: bold;
+        cursor: pointer;
+      }
+      .btn-send:hover {
+        background: #ffa500;
+      }
+
+      .btn-send:disabled {
+        background: #ccc;
+      }
+    </style>
+  </head>
+  <body>
+    <h3 class="header">API 配置</h3>
+    <label>后端地址：<input type="text" id="apiUrl" /></label>
+    <button id="save">保存设置</button>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

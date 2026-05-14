@@ -3,9 +3,15 @@
   "name": "Live Stream Sniffer",
   "version": "1.0",
   "permissions": ["webRequest", "storage", "action"],
-  "host_permissions": ["*://*.kuaishou.com/*", "*://*.yximgs.com/*", "http://localhost:3000/*"],
+  "host_permissions": [
+    "*://*.kuaishou.com/*",
+    "*://*.yximgs.com/*",
+    "http://localhost:3000/*",
+    "http://localhost:1123/*"
+  ],
   "background": {
-    "service_worker": "background.js"
+    "service_worker": "background.js",
+    "type": "module"
   },
   "content_scripts": [
     {
@@ -13,6 +19,7 @@
       "js": ["content.js"]
     }
   ],
+  "options_page": "options.html",
   "icons": {
     "16": "icon.png",
     "48": "icon.png",

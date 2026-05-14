@@ -1,22 +1,17 @@
+import { QUALITY_WEIGHTS } from './config.js';
+import { getConfig } from './utils.js';
+
 let lastUrl = ''; // 简单防抖：防止同一地址短时间内多次弹出
 let detectedStreams = [];
 let autoRecordTimer = null;
 let bestUrl = '';
 let currentBestLevel = -1;
 
-// 定义清晰度权重
-const QUALITY_WEIGHTS = {
-  FhdL4: 100, // 蓝光/全高清
-  Fhd: 90,
-  HdL0: 50, // 高清
-  HdL: 40,
-  Sd: 10, // 标清
-};
-
 console.log('[Live Stream Sniffer]KS直播监测插件已启动');
 
-function sendToBackend(url, title) {
-  fetch('http://localhost:3210/api/notify/live_download', {
+async function sendToBackend(url, title) {
+  const config = await getConfig();
+  fetch(config.apiUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ url, title: `AUTO_${title}` }),
@@ -27,6 +22,10 @@ function sendToBackend(url, title) {
   });
 }
 
+/**
+ * 自动选择最佳清晰度的视频下载地址并发送给后端
+ * @param {*} details
+ */
 function autoChooseBest(details) {
   const tabId = details.tabId;
 
@@ -86,6 +85,7 @@ chrome.webRequest.onBeforeRequest.addListener(
       chrome.storage.local.set({ streams: detectedStreams });
 
       // 2. 获取该标签页的信息
+      const tabId = details.tabId;
       chrome.tabs.get(tabId, (tab) => {
         if (chrome.runtime.lastError || !tab) return;
 

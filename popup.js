@@ -1,16 +1,9 @@
 // popup.js 渲染逻辑增强
-
-// 定义关键词对应的显示文字和颜色
-const qualityMap = [
-  { key: 'FhdL4', label: '蓝光 8M', color: '#ff5000' },
-  { key: 'Fhd', label: '全高清', color: '#ff8c00' },
-  { key: 'HdL0', label: '高清', color: '#00bfff' },
-  { key: 'HdL', label: '标准', color: '#1e90ff' },
-  { key: 'Sd', label: '标清', color: '#999' },
-];
+import { API_BASE_URL, QUALITY_LABELS } from './config.js';
+import { getConfig } from './utils.js';
 
 function getQualityInfo(url) {
-  for (let q of qualityMap) {
+  for (let q of QUALITY_LABELS) {
     if (url.includes(q.key)) return q;
   }
   return { label: '未知', color: '#666' };
@@ -18,60 +11,126 @@ function getQualityInfo(url) {
 
 const listDiv = document.getElementById('list');
 
-// 渲染函数
-chrome.storage.local.get(['streams'], (result) => {
-  const streams = result.streams || [];
-  const listDiv = document.getElementById('list');
+// // 渲染函数
+// chrome.storage.local.get(['streams'], (result) => {
+//   const streams = result.streams || [];
+//   const listDiv = document.getElementById('list');
 
-  if (streams.length === 0) {
-    listDiv.innerHTML = '<p style="color: #999; text-align: center;">暂无流地址</p>';
-    return;
-  }
+//   if (streams.length === 0) {
+//     listDiv.innerHTML = '<p style="color: #999; text-align: center;">暂无流地址</p>';
+//     return;
+//   }
 
-  // 倒序排列，最新的流在最上面
-  [...streams].reverse().forEach((url) => {
-    const quality = getQualityInfo(url);
-    const item = document.createElement('div');
-    item.className = 'stream-item';
+//   // 倒序排列，最新的流在最上面
+//   [...streams].reverse().forEach((url) => {
+//     const quality = getQualityInfo(url);
+//     const item = document.createElement('div');
+//     item.className = 'stream-item';
 
-    item.innerHTML = `
-      <div class="stream-info">
-        <span class="quality-tag" style="background: ${quality.color}">${quality.label}</span>
-        <span class="stream-type">FLV</span>
-      </div>
-      <div class="url-display">${url}</div>
-      <div class="action-area">
-        <button class="btn-send" data-url="${url}">🚀 开始录制</button>
-      </div>
-    `;
-    listDiv.appendChild(item);
+//     item.innerHTML = `
+//       <div class="stream-info">
+//         <span class="quality-tag" style="background: ${quality.color}">${quality.label}</span>
+//         <span class="stream-type">FLV</span>
+//       </div>
+//       <div class="url-display">${url}</div>
+//       <div class="action-area">
+//         <button class="btn-send" data-url="${url}">🚀 开始录制</button>
+//       </div>
+//     `;
+//     listDiv.appendChild(item);
 
-    // --- 核心：在这里插入状态读取代码 ---
-    const currentBtn = item.querySelector('.btn-send');
-    const statusKey = `status_${url}`;
+//     // --- 核心：在这里插入状态读取代码 ---
+//     const currentBtn = item.querySelector('.btn-send');
+//     const statusKey = `status_${url}`;
 
-    chrome.storage.local.get([statusKey], (res) => {
-      if (res[statusKey] === 'auto-recorded') {
-        currentBtn.innerText = '✅ 正在录制中';
-        currentBtn.disabled = true;
-        currentBtn.style.background = '#4CAF50';
-        currentBtn.style.cursor = 'not-allowed';
-      }
+//     chrome.storage.local.get([statusKey], (res) => {
+//       if (res[statusKey] === 'auto-recorded') {
+//         currentBtn.innerText = '✅ 正在录制中';
+//         currentBtn.disabled = true;
+//         currentBtn.style.background = '#4CAF50';
+//         currentBtn.style.cursor = 'not-allowed';
+//       }
+//     });
+//   });
+// });
+// 1. 封装渲染逻辑，方便多次调用
+function renderList() {
+  chrome.storage.local.get(['streams'], (result) => {
+    const streams = result.streams || [];
+    const listDiv = document.getElementById('list');
+
+    // 清空旧列表，防止重复堆叠
+    listDiv.innerHTML = '';
+
+    if (streams.length === 0) {
+      listDiv.innerHTML = '<p style="color: #999; text-align: center;">暂无流地址</p>';
+      return;
+    }
+
+    // 倒序排列，最新的流在最上面
+    [...streams].reverse().forEach((url) => {
+      const quality = getQualityInfo(url);
+      const item = document.createElement('div');
+      item.className = 'stream-item';
+
+      item.innerHTML = `
+        <div class="stream-info">
+          <span class="quality-tag" style="background: ${quality.color}">${quality.label}</span>
+          <span class="stream-type">FLV</span>
+        </div>
+        <div class="url-display">${url}</div>
+        <div class="action-area">
+          <button class="btn-send" data-url="${url}">🚀 开始录制</button>
+        </div>
+      `;
+      listDiv.appendChild(item);
+
+      // --- 核心：在这里插入状态读取代码 ---
+      const currentBtn = item.querySelector('.btn-send');
+      const statusKey = `status_${url}`;
+
+      chrome.storage.local.get([statusKey], (res) => {
+        if (res[statusKey] === 'auto-recorded') {
+          currentBtn.innerText = '✅ 正在录制中';
+          currentBtn.disabled = true;
+          currentBtn.style.background = '#4CAF50';
+          currentBtn.style.cursor = 'not-allowed';
+        }
+      });
     });
   });
+}
+
+// 2. 页面首次打开时，执行一次初始化渲染
+renderList();
+
+// 3. 核心：监听存储变化
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  // 检查是否是我们要找的 local 存储，且 streams 发生了变化
+  if (areaName === 'local' && changes.streams) {
+    console.log('检测到数据更新，正在重新渲染列表...');
+    renderList(); // 数据变了，立即刷新 UI
+  }
 });
 
 // 处理点击发送
-document.addEventListener('click', (e) => {
+document.addEventListener('click', async (e) => {
   if (e.target.classList.contains('btn-send')) {
     const streamUrl = e.target.getAttribute('data-url');
 
-    fetch('http://localhost:3210/api/notify/live_download', {
+    // --- 核心逻辑：获取当前活动的标签页 ---
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const tabTitle = tab?.title || '未知标题';
+    // ------------------------------------
+
+    const config = await getConfig();
+
+    fetch(config.apiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         url: streamUrl,
-        title: 'KSLive_' + Date.now(),
+        title: tabTitle,
       }),
     })
       .then(() => {
