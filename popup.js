@@ -104,7 +104,18 @@ function renderList() {
 // 2. 页面首次打开时，执行一次初始化渲染
 renderList();
 
-// 3. 核心：监听存储变化
+// 3. 读取并初始化监听开关状态
+chrome.storage.sync.get('monitorEnabled', (result) => {
+  const toggle = document.getElementById('monitorToggle');
+  toggle.checked = result.monitorEnabled !== false;
+  toggle.addEventListener('change', () => {
+    const enabled = toggle.checked;
+    chrome.storage.sync.set({ monitorEnabled: enabled });
+    chrome.runtime.sendMessage({ action: 'toggle_monitor', enabled });
+  });
+});
+
+// 4. 核心：监听存储变化
 chrome.storage.onChanged.addListener((changes, areaName) => {
   // 检查是否是我们要找的 local 存储，且 streams 发生了变化
   if (areaName === 'local' && changes.streams) {

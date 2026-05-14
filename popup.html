@@ -28,6 +28,18 @@
         background: #eee;
         font-size: 10px;
       }
+      .toggle-label {
+        font-size: 12px;
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        cursor: pointer;
+        user-select: none;
+      }
+      .toggle-label input {
+        width: auto;
+        cursor: pointer;
+      }
       .stream-item {
         background: #fff;
         border: 1px solid #ff8c00;
@@ -101,7 +113,12 @@
   <body>
     <div class="header">
       <span>检测到的直播流</span>
-      <button class="btn-clear" id="clearBtn">清空</button>
+      <div style="display:flex;gap:8px;align-items:center">
+        <label class="toggle-label">
+          <input type="checkbox" id="monitorToggle" /> 后台监听
+        </label>
+        <button class="btn-clear" id="clearBtn">清空</button>
+      </div>
     </div>
     <div id="list"></div>
     <script type="module" src="popup.js"></script>

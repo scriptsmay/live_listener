@@ -1,4 +1,8 @@
-import { QUALITY_WEIGHTS, LIVING_API_URL, POLL_INTERVAL_MINUTES } from './config.js';
+import {
+  QUALITY_WEIGHTS,
+  LIVING_API_URL,
+  POLL_INTERVAL_MINUTES,
+} from './config.js';
 import { getConfig } from './utils.js';
 
 let lastUrl = ''; // 简单防抖：防止同一地址短时间内多次弹出
@@ -29,7 +33,7 @@ function autoChooseBest(details) {
   const tabId = details.tabId;
 
   chrome.tabs.get(tabId, (tab) => {
-    if (chrome.runtime.lastError || !tab || !tab.title.includes('KSG无言')) return;
+    if (chrome.runtime.lastError || !tab) return;
     const roomUrl = tab.url;
 
     // --- 核心：清晰度判定 ---
@@ -87,18 +91,23 @@ chrome.webRequest.onBeforeRequest.addListener(
       // 2. 获取该标签页的信息
       const tabId = details.tabId;
       chrome.tabs.get(tabId, (tab) => {
-        if (chrome.runtime.lastError || !tab) return;
+        if (chrome.runtime.lastError || !tab || !tab.title) return;
 
-        // 3. 关键判断：标题是否包含“KSG无言”
-        if (tab.title && tab.title.includes('KSG无言')) {
-          console.log(`🎯 匹配到目标直播间: ${tab.title}，准备自动录制...`);
-          autoChooseBest(details);
-        }
+        // 3. 匹配关注列表中的主播
+        getConfig().then((config) => {
+          const matched = config.followedAuthors.find((a) =>
+            tab.title.includes(a)
+          );
+          if (matched) {
+            console.log(`🎯 匹配到目标直播间: ${tab.title}，准备自动录制...`);
+            autoChooseBest(details);
+          }
+        });
       });
     }
   },
   // 3. 这里的 urls 过滤也要同步扩大
-  { urls: ['<all_urls>'] },
+  { urls: ['<all_urls>'] }
 );
 
 // 监听来自 Popup or Options 的指令
@@ -128,6 +137,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     checkFollowingLivings();
     sendResponse({ status: 'recheck_started' });
   }
+
+  if (request.action === 'toggle_monitor') {
+    if (request.enabled) {
+      notifiedRooms.clear();
+      chrome.storage.local.remove('notifiedRooms');
+      checkFollowingLivings();
+    }
+    sendResponse({ status: 'ok' });
+  }
 });
 
 // ===== 轮询关注列表，检测开播 =====
@@ -150,14 +168,11 @@ function pickBestQuality(representations) {
       best = rep;
     }
   }
+  console.log('Best quality:', bestLevel);
   return best?.url || representations[0]?.url || '';
 }
 
 async function handleStreamerOnline(author, roomId, playUrls, caption) {
-  if (notifiedRooms.has(roomId)) return;
-  notifiedRooms.add(roomId);
-  chrome.storage.local.set({ notifiedRooms: [...notifiedRooms] });
-
   const roomUrl = `https://live.kuaishou.com/u/${author.id}`;
 
   let flvUrl = '';
@@ -168,6 +183,31 @@ async function handleStreamerOnline(author, roomId, playUrls, caption) {
     }
   }
 
+  console.log(
+    `主播 ${author.name} 开播了，直播间: ${roomUrl}, FLV地址: ${flvUrl}`
+  );
+
+  if (flvUrl) {
+    console.log(`🎥 ${author.name} 自动发送直播流到后端`);
+    sendToBackend(flvUrl, author.name, roomUrl);
+  } else {
+    // API 未返回流地址，尝试打开直播间让 webRequest 捕获
+    console.log(
+      `🌐 ${author.name} 无流地址，尝试打开直播间页面让 webRequest 捕获`
+    );
+    chrome.tabs.query(
+      { url: `*://live.kuaishou.com/u/${author.id}*` },
+      (tabs) => {
+        if (!tabs || !tabs.length) {
+          chrome.tabs.create({ url: roomUrl, active: false });
+        }
+      }
+    );
+  }
+
+  if (notifiedRooms.has(roomId)) return;
+  notifiedRooms.add(roomId);
+  chrome.storage.local.set({ notifiedRooms: [...notifiedRooms] });
   chrome.storage.local.set({ [`notify_${roomId}`]: roomUrl });
 
   chrome.notifications.create(`notify_${roomId}`, {
@@ -178,19 +218,19 @@ async function handleStreamerOnline(author, roomId, playUrls, caption) {
     contextMessage: '点击打开直播间',
     requireInteraction: true,
   });
-
-  if (flvUrl) {
-    console.log(`🎥 ${author.name} 自动发送直播流到后端`);
-    sendToBackend(flvUrl, author.name, roomUrl);
-  }
 }
 
 function randomDelay(min, max) {
-  return new Promise(resolve => setTimeout(resolve, Math.random() * (max - min) + min));
+  return new Promise((resolve) =>
+    setTimeout(resolve, Math.random() * (max - min) + min)
+  );
 }
 
 async function checkFollowingLivings() {
   try {
+    const { monitorEnabled } = await chrome.storage.sync.get('monitorEnabled');
+    if (monitorEnabled === false) return;
+
     const config = await getConfig();
     const authors = config.followedAuthors;
     if (!authors.length) return;
@@ -210,7 +250,12 @@ async function checkFollowingLivings() {
       if (!author) continue;
       if (authors.includes(author.name)) {
         console.log(`🎯 检测到关注的主播开播: ${author.name}`);
-        handleStreamerOnline(author, item.id, item.playUrls || [], item.caption);
+        handleStreamerOnline(
+          author,
+          item.id,
+          item.playUrls || [],
+          item.caption
+        );
       }
     }
   } catch (err) {
@@ -219,7 +264,9 @@ async function checkFollowingLivings() {
 }
 
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.alarms.create('pollFollowingLivings', { periodInMinutes: POLL_INTERVAL_MINUTES });
+  chrome.alarms.create('pollFollowingLivings', {
+    periodInMinutes: POLL_INTERVAL_MINUTES,
+  });
   checkFollowingLivings();
 });
 
@@ -231,7 +278,9 @@ chrome.notifications.onClicked.addListener((notifId) => {
   if (!notifId.startsWith('notify_')) return;
   const roomId = notifId.replace('notify_', '');
   chrome.storage.local.get(`notify_${roomId}`, (result) => {
-    const url = result[`notify_${roomId}`] || 'https://live.kuaishou.com/my-follow/living';
+    const url =
+      result[`notify_${roomId}`] ||
+      'https://live.kuaishou.com/my-follow/living';
     chrome.tabs.create({ url });
   });
 });
