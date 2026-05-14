@@ -29,3 +29,12 @@ export const DEFAULT_SETTINGS = {
     'Content-Type': 'application/json',
   },
 };
+
+// 关注的主播列表 — 匹配 API 响应中的 author.name
+export const FOLLOWED_AUTHORS = ['KSG无言'];
+
+// 轮询检测开播的间隔（分钟）
+export const POLL_INTERVAL_MINUTES = 1;
+
+// 查询关注中主播的 API
+export const LIVING_API_URL = 'https://live.kuaishou.com/live_api/follow/living';

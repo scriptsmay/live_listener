@@ -1,4 +1,4 @@
-import { QUALITY_WEIGHTS } from './config.js';
+import { QUALITY_WEIGHTS, LIVING_API_URL, POLL_INTERVAL_MINUTES } from './config.js';
 import { getConfig } from './utils.js';
 
 let lastUrl = ''; // 简单防抖：防止同一地址短时间内多次弹出
@@ -120,4 +120,103 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     return true; // 保持异步消息通道开启
   }
+});
+
+// ===== 轮询关注列表，检测开播 =====
+
+const notifiedRooms = new Set();
+
+// 在 SW 重启时，从本地存储恢复已通知记录
+chrome.storage.local.get('notifiedRooms', (result) => {
+  if (result.notifiedRooms) {
+    for (const id of result.notifiedRooms) notifiedRooms.add(id);
+  }
+});
+
+function pickBestQuality(representations) {
+  let best = null;
+  let bestLevel = -1;
+  for (const rep of representations) {
+    if ((rep.level || 0) > bestLevel) {
+      bestLevel = rep.level;
+      best = rep;
+    }
+  }
+  return best?.url || representations[0]?.url || '';
+}
+
+async function handleStreamerOnline(author, roomId, playUrls, caption) {
+  if (notifiedRooms.has(roomId)) return;
+  notifiedRooms.add(roomId);
+  chrome.storage.local.set({ notifiedRooms: [...notifiedRooms] });
+
+  const roomUrl = `https://live.kuaishou.com/live/${author.id}`;
+
+  let flvUrl = '';
+  for (const p of playUrls) {
+    if (p.adaptationSet?.representation?.length) {
+      flvUrl = pickBestQuality(p.adaptationSet.representation);
+      break;
+    }
+  }
+
+  chrome.storage.local.set({ [`notify_${roomId}`]: roomUrl });
+
+  chrome.notifications.create(`notify_${roomId}`, {
+    type: 'basic',
+    iconUrl: 'icon.png',
+    title: `${author.name} 开播了！`,
+    message: caption || '正在直播',
+    contextMessage: '点击打开直播间',
+    requireInteraction: true,
+  });
+
+  if (flvUrl) {
+    console.log(`🎥 ${author.name} 自动发送直播流到后端`);
+    sendToBackend(flvUrl, author.name, roomUrl);
+  }
+}
+
+async function checkFollowingLivings() {
+  try {
+    const config = await getConfig();
+    const authors = config.followedAuthors;
+    if (!authors.length) return;
+
+    const resp = await fetch(LIVING_API_URL, { credentials: 'include' });
+    if (!resp.ok) {
+      console.warn(`[Live Stream Sniffer] 查询关注列表失败: ${resp.status}`);
+      return;
+    }
+    const data = await resp.json();
+    const list = data?.data?.list || [];
+    for (const item of list) {
+      const author = item?.author;
+      if (!author) continue;
+      if (authors.includes(author.name)) {
+        console.log(`🎯 检测到关注的主播开播: ${author.name}`);
+        handleStreamerOnline(author, item.id, item.playUrls || [], item.caption);
+      }
+    }
+  } catch (err) {
+    console.error('[Live Stream Sniffer] 查询关注列表异常:', err);
+  }
+}
+
+chrome.runtime.onInstalled.addListener(() => {
+  chrome.alarms.create('pollFollowingLivings', { periodInMinutes: POLL_INTERVAL_MINUTES });
+  checkFollowingLivings();
+});
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name === 'pollFollowingLivings') checkFollowingLivings();
+});
+
+chrome.notifications.onClicked.addListener((notifId) => {
+  if (!notifId.startsWith('notify_')) return;
+  const roomId = notifId.replace('notify_', '');
+  chrome.storage.local.get(`notify_${roomId}`, (result) => {
+    const url = result[`notify_${roomId}`] || 'https://live.kuaishou.com/my-follow/living';
+    chrome.tabs.create({ url });
+  });
 });

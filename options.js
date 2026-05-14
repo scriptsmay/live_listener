@@ -1,17 +1,23 @@
 // options.js
-import { DEFAULT_SETTINGS } from './config.js';
+import { DEFAULT_SETTINGS, FOLLOWED_AUTHORS } from './config.js';
 
 // 初始化页面
 document.addEventListener('DOMContentLoaded', async () => {
-  // 从存储中获取，如果没有则使用 config.js 里的默认值
-  const data = await chrome.storage.sync.get('apiUrl');
+  const data = await chrome.storage.sync.get(['apiUrl', 'followedAuthors']);
   document.getElementById('apiUrl').value = data.apiUrl || DEFAULT_SETTINGS.apiUrl;
+  const authors = data.followedAuthors?.length ? data.followedAuthors : FOLLOWED_AUTHORS;
+  document.getElementById('followedAuthors').value = authors.join('\n');
 });
 
 // 保存逻辑
 document.getElementById('save').addEventListener('click', () => {
   const newUrl = document.getElementById('apiUrl').value;
-  chrome.storage.sync.set({ apiUrl: newUrl }, () => {
+  const raw = document.getElementById('followedAuthors').value;
+  const authors = raw
+    .split('\n')
+    .map(s => s.trim())
+    .filter(Boolean);
+  chrome.storage.sync.set({ apiUrl: newUrl, followedAuthors: authors }, () => {
     alert('配置已更新');
   });
 });

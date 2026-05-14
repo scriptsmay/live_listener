@@ -56,11 +56,30 @@
       .btn-send:disabled {
         background: #ccc;
       }
+      textarea {
+        border: 1px solid #eee;
+        width: 320px;
+        padding: 5px;
+        border-radius: 4px;
+        resize: vertical;
+        font-family: sans-serif;
+        font-size: 12px;
+      }
+      .section {
+        margin-bottom: 16px;
+      }
     </style>
   </head>
   <body>
     <h3 class="header">API 配置</h3>
-    <label>后端地址：<input type="text" id="apiUrl" /></label>
+    <div class="section">
+      <label>后端地址：<input type="text" id="apiUrl" /></label>
+    </div>
+    <div class="section">
+      <label>关注的主播（每行一个）：<br />
+        <textarea id="followedAuthors" rows="5" placeholder="KSG无言"></textarea>
+      </label>
+    </div>
     <button id="save">保存设置</button>
     <script type="module" src="options.js"></script>
   </body>
