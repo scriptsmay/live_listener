@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <style>
       body {
-        width: 300px;
+        width: 400px;
         font-family: sans-serif;
         padding: 10px;
         margin: 0;
@@ -17,35 +17,84 @@
         display: flex;
         justify-content: space-between;
       }
-      .stream-item {
-        font-size: 11px;
-        background: #f9f9f9;
-        padding: 8px;
-        margin-bottom: 8px;
-        border-radius: 4px;
-        border: 1px solid #eee;
-      }
-      .url {
-        word-break: break-all;
-        color: #666;
-        margin-bottom: 8px;
-        max-height: 35px;
-        overflow: hidden;
-      }
       button {
         cursor: pointer;
         border: none;
         border-radius: 4px;
         padding: 5px 10px;
-      }
-      .btn-send {
-        background: #ff5000;
-        color: white;
-        width: 100%;
+        font-size: 12px;
       }
       .btn-clear {
         background: #eee;
         font-size: 10px;
+      }
+      .stream-item {
+        background: #fff;
+        border: 1px solid #ff8c00;
+        border-radius: 8px;
+        padding: 12px;
+        margin-bottom: 10px;
+        transition: box-shadow 0.2s;
+      }
+
+      .stream-item:hover {
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+      }
+
+      .stream-info {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        margin-bottom: 8px;
+      }
+
+      .quality-tag {
+        color: white;
+        font-size: 12px;
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-weight: bold;
+      }
+
+      .stream-type {
+        font-size: 12px;
+        color: #888;
+        background: #f0f0f0;
+        padding: 2px 4px;
+        border-radius: 2px;
+      }
+
+      .url-display {
+        font-size: 11px;
+        color: #666;
+        word-break: break-all;
+        display: -webkit-box;
+        -webkit-line-clamp: 3; /* 最多显示三行 */
+        line-clamp: 3;
+        -webkit-box-orient: vertical;
+        overflow: hidden;
+        margin-bottom: 10px;
+        background: #f8f8f8;
+        padding: 4px;
+        border-radius: 4px;
+      }
+
+      .btn-send {
+        background: #ff8c00;
+        color: white;
+        border: none;
+        width: auto;
+        padding: 8px 10px;
+        border-radius: 6px;
+        font-weight: bold;
+        cursor: pointer;
+      }
+      .btn-send:hover {
+        background: #ffa500;
+      }
+
+      .btn-send:disabled {
+        background: #ccc;
       }
     </style>
   </head>

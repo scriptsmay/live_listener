@@ -22,6 +22,8 @@ function sendToBackend(url, title) {
     body: JSON.stringify({ url, title: `AUTO_${title}` }),
   }).then(() => {
     chrome.action.setBadgeText({ text: 'HIGH' });
+    // background.js 发送成功后记录状态
+    chrome.storage.local.set({ [`status_${url}`]: 'auto-recorded' });
   });
 }
 
