@@ -63,7 +63,8 @@ function renderList() {
     listDiv.innerHTML = '';
 
     if (streams.length === 0) {
-      listDiv.innerHTML = '<p style="color: #999; text-align: center;">暂无流地址</p>';
+      listDiv.innerHTML =
+        '<p style="color: #999; text-align: center;">暂无流地址</p>';
       return;
     }
 
@@ -130,7 +131,10 @@ document.addEventListener('click', async (e) => {
     const streamUrl = e.target.getAttribute('data-url');
 
     // --- 核心逻辑：获取当前活动的标签页 ---
-    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    const [tab] = await chrome.tabs.query({
+      active: true,
+      currentWindow: true,
+    });
     const tabTitle = tab?.title || '未知标题';
     const tabUrl = tab?.url || '';
     // ------------------------------------
@@ -146,9 +150,10 @@ document.addEventListener('click', async (e) => {
         room_url: tabUrl,
       }),
     })
-      .then(() => {
+      .then((res) => {
         e.target.innerText = '✅ 已发送';
         e.target.style.background = '#4CAF50';
+        console.log('发送成功：', res);
       })
       .catch((err) => alert('后端未启动或发送失败'));
   }
@@ -159,7 +164,8 @@ document.addEventListener('click', async (e) => {
     // 发送消息给 background.js 彻底清除数据
     chrome.runtime.sendMessage({ action: 'clear_count' }, () => {
       // 清除 UI 上的列表
-      document.getElementById('list').innerHTML = '<p style="color: #999; text-align: center;">暂无流地址</p>';
+      document.getElementById('list').innerHTML =
+        '<p style="color: #999; text-align: center;">暂无流地址</p>';
       // 关闭弹窗（可选）
       setTimeout(() => window.close(), 500);
     });

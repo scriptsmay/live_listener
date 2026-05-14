@@ -24,9 +24,10 @@ async function sendToBackend(url, title, roomUrl, caption = '') {
       room_url: roomUrl,
       caption,
     }),
-  }).then(() => {
+  }).then((res) => {
     chrome.action.setBadgeText({ text: 'HIGH' });
     chrome.storage.local.set({ [`status_${url}`]: 'auto-recorded' });
+    console.log('[DEBUG]response:----->', res);
   });
 }
 
