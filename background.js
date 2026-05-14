@@ -13,12 +13,17 @@ let currentBestLevel = -1;
 
 console.log('[Live Stream Sniffer]KS直播监测插件已启动');
 
-async function sendToBackend(url, title, roomUrl) {
+async function sendToBackend(url, title, roomUrl, caption = '') {
   const config = await getConfig();
   fetch(config.apiUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url, title: `AUTO_${title}`, room_url: roomUrl }),
+    body: JSON.stringify({
+      url,
+      title: `AUTO_${title}`,
+      room_url: roomUrl,
+      caption,
+    }),
   }).then(() => {
     chrome.action.setBadgeText({ text: 'HIGH' });
     chrome.storage.local.set({ [`status_${url}`]: 'auto-recorded' });
@@ -199,7 +204,7 @@ async function handleStreamerOnline(author, roomId, playUrls, caption) {
 
   if (flvUrl) {
     console.log(`🎥 ${author.name} 自动发送直播流到后端`);
-    sendToBackend(flvUrl, author.name, roomUrl);
+    sendToBackend(flvUrl, author.name, roomUrl, caption);
   } else {
     // API 未返回流地址，尝试打开直播间让 webRequest 捕获
     console.log(
@@ -241,7 +246,8 @@ async function checkFollowingLivings() {
     const { monitorEnabled } = await chrome.storage.sync.get('monitorEnabled');
     if (monitorEnabled === false) return;
 
-    const { kuaishouVisited } = await chrome.storage.local.get('kuaishouVisited');
+    const { kuaishouVisited } =
+      await chrome.storage.local.get('kuaishouVisited');
     if (!kuaishouVisited) return;
 
     const config = await getConfig();
