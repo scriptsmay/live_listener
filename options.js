@@ -18,6 +18,7 @@ document.getElementById('save').addEventListener('click', () => {
     .map(s => s.trim())
     .filter(Boolean);
   chrome.storage.sync.set({ apiUrl: newUrl, followedAuthors: authors }, () => {
-    alert('配置已更新');
+    chrome.runtime.sendMessage({ action: 'recheck_following' });
+    alert('配置已更新，已开始重新检测');
   });
 });

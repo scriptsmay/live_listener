@@ -101,7 +101,7 @@ chrome.webRequest.onBeforeRequest.addListener(
   { urls: ['<all_urls>'] },
 );
 
-// 监听来自 Popup 的清空指令
+// 监听来自 Popup or Options 的指令
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'clear_count') {
     console.log('收到清空指令');
@@ -119,6 +119,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     });
 
     return true; // 保持异步消息通道开启
+  }
+
+  if (request.action === 'recheck_following') {
+    // 配置更新后立即重新检测
+    notifiedRooms.clear();
+    chrome.storage.local.remove('notifiedRooms');
+    checkFollowingLivings();
+    sendResponse({ status: 'recheck_started' });
   }
 });
 
@@ -150,7 +158,7 @@ async function handleStreamerOnline(author, roomId, playUrls, caption) {
   notifiedRooms.add(roomId);
   chrome.storage.local.set({ notifiedRooms: [...notifiedRooms] });
 
-  const roomUrl = `https://live.kuaishou.com/live/${author.id}`;
+  const roomUrl = `https://live.kuaishou.com/u/${author.id}`;
 
   let flvUrl = '';
   for (const p of playUrls) {
@@ -177,11 +185,18 @@ async function handleStreamerOnline(author, roomId, playUrls, caption) {
   }
 }
 
+function randomDelay(min, max) {
+  return new Promise(resolve => setTimeout(resolve, Math.random() * (max - min) + min));
+}
+
 async function checkFollowingLivings() {
   try {
     const config = await getConfig();
     const authors = config.followedAuthors;
     if (!authors.length) return;
+
+    // 随机延迟 2~6s，避免每次请求时间固定被风控
+    await randomDelay(2000, 6000);
 
     const resp = await fetch(LIVING_API_URL, { credentials: 'include' });
     if (!resp.ok) {
