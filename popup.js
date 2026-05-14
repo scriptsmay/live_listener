@@ -121,6 +121,7 @@ document.addEventListener('click', async (e) => {
     // --- 核心逻辑：获取当前活动的标签页 ---
     const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
     const tabTitle = tab?.title || '未知标题';
+    const tabUrl = tab?.url || '';
     // ------------------------------------
 
     const config = await getConfig();
@@ -131,6 +132,7 @@ document.addEventListener('click', async (e) => {
       body: JSON.stringify({
         url: streamUrl,
         title: tabTitle,
+        room_url: tabUrl,
       }),
     })
       .then(() => {

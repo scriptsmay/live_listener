@@ -9,15 +9,14 @@ let currentBestLevel = -1;
 
 console.log('[Live Stream Sniffer]KS直播监测插件已启动');
 
-async function sendToBackend(url, title) {
+async function sendToBackend(url, title, roomUrl) {
   const config = await getConfig();
   fetch(config.apiUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url, title: `AUTO_${title}` }),
+    body: JSON.stringify({ url, title: `AUTO_${title}`, room_url: roomUrl }),
   }).then(() => {
     chrome.action.setBadgeText({ text: 'HIGH' });
-    // background.js 发送成功后记录状态
     chrome.storage.local.set({ [`status_${url}`]: 'auto-recorded' });
   });
 }
@@ -31,6 +30,7 @@ function autoChooseBest(details) {
 
   chrome.tabs.get(tabId, (tab) => {
     if (chrome.runtime.lastError || !tab || !tab.title.includes('KSG无言')) return;
+    const roomUrl = tab.url;
 
     // --- 核心：清晰度判定 ---
     let weight = 0;
@@ -51,7 +51,7 @@ function autoChooseBest(details) {
     // --- 延迟 2 秒发送，等待所有潜在的清晰度流都冒出来 ---
     if (autoRecordTimer) clearTimeout(autoRecordTimer);
     autoRecordTimer = setTimeout(() => {
-      sendToBackend(bestUrl, tab.title);
+      sendToBackend(bestUrl, tab.title, roomUrl);
       // 重置状态，准备下一次可能的切换（比如主播断流重开）
       currentBestLevel = -1;
       bestUrl = '';
