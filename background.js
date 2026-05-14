@@ -258,6 +258,7 @@ async function checkFollowingLivings() {
     // 随机延迟 2~6s，避免每次请求时间固定被风控
     await randomDelay(2000, 6000);
 
+    console.log('[Live Stream Sniffer] 查询关注列表，检测开播中...');
     const resp = await fetch(LIVING_API_URL, { credentials: 'include' });
     if (!resp.ok) {
       console.warn(`[Live Stream Sniffer] 查询关注列表失败: ${resp.status}`);
