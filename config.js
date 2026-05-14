@@ -1,5 +1,6 @@
 // config.js
-export const API_BASE_URL = 'http://localhost:1123/api/notify/live_download';
+export const NOTIFY_API_URL = 'http://localhost:1123/api/notify/live_download';
+export const STATUS_API_URL = 'http://localhost:1123/api/notify/status';
 
 // 定义关键词对应的显示文字和颜色
 export const QUALITY_LABELS = [
@@ -12,29 +13,35 @@ export const QUALITY_LABELS = [
 
 // 定义清晰度权重
 export const QUALITY_WEIGHTS = {
-  FhdL4: 100, // 蓝光/全高清
+  FhdL4: 100,
   Fhd: 90,
-  HdL0: 50, // 高清
+  HdL0: 50,
   HdL: 40,
-  Sd: 10, // 标清
+  Sd: 10,
 };
 
 export const DEFAULT_SETTINGS = {
-  // API 地址
-  apiUrl: API_BASE_URL,
-  // 是否开启通知提示
+  notifyApiUrl: NOTIFY_API_URL,
+  statusApiUrl: STATUS_API_URL,
   enableNotification: false,
-  // 默认请求头
   headers: {
     'Content-Type': 'application/json',
   },
 };
 
-// 关注的主播列表 — 匹配 API 响应中的 author.name
 export const FOLLOWED_AUTHORS = ['KSG无言'];
 
-// 轮询检测开播的间隔（分钟）
 export const POLL_INTERVAL_MINUTES = 1;
 
-// 查询关注中主播的 API
 export const LIVING_API_URL = 'https://live.kuaishou.com/live_api/follow/living';
+
+export async function getConfig() {
+  const storage = await chrome.storage.sync.get(null);
+  return {
+    notifyApiUrl: storage.notifyApiUrl || storage.apiUrl || DEFAULT_SETTINGS.notifyApiUrl,
+    statusApiUrl: storage.statusApiUrl || DEFAULT_SETTINGS.statusApiUrl,
+    followedAuthors: storage.hasOwnProperty('followedAuthors')
+      ? storage.followedAuthors
+      : FOLLOWED_AUTHORS,
+  };
+}

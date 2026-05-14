@@ -2,33 +2,63 @@ import {
   QUALITY_WEIGHTS,
   LIVING_API_URL,
   POLL_INTERVAL_MINUTES,
+  getConfig,
 } from './config.js';
-import { getConfig } from './utils.js';
 
 let lastUrl = ''; // 简单防抖：防止同一地址短时间内多次弹出
 let detectedStreams = [];
 let autoRecordTimer = null;
 let bestUrl = '';
 let currentBestLevel = -1;
+let activeRecordingRoomUrl = null; // 当前正在录制中的直播间URL，不为空时跳过关注列表请求
 
 console.log('[Live Stream Sniffer]KS直播监测插件已启动');
 
 async function sendToBackend(url, title, roomUrl, caption = '') {
   const config = await getConfig();
-  fetch(config.apiUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      url,
-      title: `AUTO_${title}`,
-      room_url: roomUrl,
-      caption,
-    }),
-  }).then((res) => {
-    chrome.action.setBadgeText({ text: 'HIGH' });
-    chrome.storage.local.set({ [`status_${url}`]: 'auto-recorded' });
-    console.log('[DEBUG]response:----->', res);
-  });
+
+  // 先查后端状态，已在录制则跳过
+  try {
+    const resp = await fetch(
+      `${config.statusApiUrl}?url=${encodeURIComponent(roomUrl)}`
+    );
+    const data = await resp.json();
+    if (
+      data.exists &&
+      (data.data?.status === 'recording' || data.data?.status === 'paused')
+    ) {
+      console.log(`[Live Stream Sniffer] 已在录制中，跳过: ${roomUrl}`);
+      chrome.action.setBadgeText({ text: 'HIGH' });
+      chrome.storage.local.set({ [`status_${url}`]: 'auto-recorded' });
+      activeRecordingRoomUrl = roomUrl;
+      return;
+    }
+  } catch (err) {
+    console.warn('[Live Stream Sniffer] 状态查询失败，直接发送录制请求:', err);
+  }
+
+  // 未在录制，发送录制请求
+  try {
+    const res = await fetch(config.notifyApiUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        url,
+        title: `AUTO_${title}`,
+        room_url: roomUrl,
+        caption,
+      }),
+    });
+    if (res.ok) {
+      chrome.action.setBadgeText({ text: 'HIGH' });
+      chrome.storage.local.set({ [`status_${url}`]: 'auto-recorded' });
+      activeRecordingRoomUrl = roomUrl;
+    }
+    const data = await res.json();
+    console.log('[DEBUG]response----->', JSON.stringify(data));
+  } catch (err) {
+    console.error('[Live Stream Sniffer] 发送录制请求失败:', err);
+  }
 }
 
 /**
@@ -162,6 +192,36 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     }
     sendResponse({ status: 'ok' });
   }
+
+  // 来自 content.js 的视频流检测（同时起到 MV3 心跳保活作用）
+  if (request.Message === 'addMedia' && request.url) {
+    const url = request.url;
+    const tab = sender.tab;
+    if (!tab || !tab.title) return;
+
+    // 与 webRequest 捕获去重
+    if (url === lastUrl) return;
+    lastUrl = url;
+
+    console.log('✅ [content] 捕获到直播流地址:', url);
+    detectedStreams.push(url);
+    chrome.action.setBadgeText({ text: detectedStreams.length.toString() });
+    chrome.action.setBadgeBackgroundColor({ color: '#ff5000' });
+    chrome.storage.local.set({ streams: detectedStreams });
+
+    // 匹配关注列表中的主播
+    getConfig().then((config) => {
+      const matched = config.followedAuthors.find((a) =>
+        tab.title.includes(a)
+      );
+      if (matched) {
+        console.log(`🎯 [content] 匹配到目标直播间: ${tab.title}`);
+        // video.currentSrc 已是页面选好的清晰度，无需 quality 等待
+        sendToBackend(url, tab.title, tab.url);
+      }
+    });
+    return true;
+  }
 });
 
 // ===== 轮询关注列表，检测开播 =====
@@ -246,6 +306,31 @@ async function checkFollowingLivings() {
   try {
     const { monitorEnabled } = await chrome.storage.sync.get('monitorEnabled');
     if (monitorEnabled === false) return;
+
+    // 如果已有正在录制的直播间，先查后端状态，无需每次都请求快手接口
+    if (activeRecordingRoomUrl) {
+      const config = await getConfig();
+      try {
+        const resp = await fetch(
+          `${config.statusApiUrl}?url=${encodeURIComponent(activeRecordingRoomUrl)}`
+        );
+        const data = await resp.json();
+        if (
+          data.exists &&
+          (data.data?.status === 'recording' || data.data?.status === 'paused')
+        ) {
+          console.log('[Live Stream Sniffer] 仍在录制中，跳过关注列表查询');
+          return;
+        }
+      } catch (err) {
+        console.warn(
+          '[Live Stream Sniffer] 状态查询失败，降级为查询关注列表:',
+          err
+        );
+      }
+      // 不在录制中了，清除标记，下次正常查询关注列表
+      activeRecordingRoomUrl = null;
+    }
 
     const { kuaishouVisited } =
       await chrome.storage.local.get('kuaishouVisited');

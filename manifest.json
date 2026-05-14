@@ -6,7 +6,6 @@
   "host_permissions": [
     "*://*.kuaishou.com/*",
     "*://*.yximgs.com/*",
-    "http://localhost:3000/*",
     "http://localhost:1123/*"
   ],
   "background": {

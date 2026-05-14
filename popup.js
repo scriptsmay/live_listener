@@ -1,6 +1,4 @@
-// popup.js 渲染逻辑增强
-import { API_BASE_URL, QUALITY_LABELS } from './config.js';
-import { getConfig } from './utils.js';
+import { QUALITY_LABELS, getConfig } from './config.js';
 
 function getQualityInfo(url) {
   for (let q of QUALITY_LABELS) {
@@ -9,51 +7,7 @@ function getQualityInfo(url) {
   return { label: '未知', color: '#666' };
 }
 
-const listDiv = document.getElementById('list');
-
-// // 渲染函数
-// chrome.storage.local.get(['streams'], (result) => {
-//   const streams = result.streams || [];
-//   const listDiv = document.getElementById('list');
-
-//   if (streams.length === 0) {
-//     listDiv.innerHTML = '<p style="color: #999; text-align: center;">暂无流地址</p>';
-//     return;
-//   }
-
-//   // 倒序排列，最新的流在最上面
-//   [...streams].reverse().forEach((url) => {
-//     const quality = getQualityInfo(url);
-//     const item = document.createElement('div');
-//     item.className = 'stream-item';
-
-//     item.innerHTML = `
-//       <div class="stream-info">
-//         <span class="quality-tag" style="background: ${quality.color}">${quality.label}</span>
-//         <span class="stream-type">FLV</span>
-//       </div>
-//       <div class="url-display">${url}</div>
-//       <div class="action-area">
-//         <button class="btn-send" data-url="${url}">🚀 开始录制</button>
-//       </div>
-//     `;
-//     listDiv.appendChild(item);
-
-//     // --- 核心：在这里插入状态读取代码 ---
-//     const currentBtn = item.querySelector('.btn-send');
-//     const statusKey = `status_${url}`;
-
-//     chrome.storage.local.get([statusKey], (res) => {
-//       if (res[statusKey] === 'auto-recorded') {
-//         currentBtn.innerText = '✅ 正在录制中';
-//         currentBtn.disabled = true;
-//         currentBtn.style.background = '#4CAF50';
-//         currentBtn.style.cursor = 'not-allowed';
-//       }
-//     });
-//   });
-// });
-// 1. 封装渲染逻辑，方便多次调用
+// 封装渲染逻辑，方便多次调用
 function renderList() {
   chrome.storage.local.get(['streams'], (result) => {
     const streams = result.streams || [];
@@ -141,7 +95,7 @@ document.addEventListener('click', async (e) => {
 
     const config = await getConfig();
 
-    fetch(config.apiUrl, {
+    fetch(config.notifyApiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
