@@ -31,7 +31,9 @@ async function sendToBackend(url, title, roomUrl, caption = '') {
         data.exists &&
         (data.data?.status === 'recording' || data.data?.status === 'paused')
       ) {
-        console.log(`[Live Stream Sniffer][${env.name}] 已在录制中，跳过: ${roomUrl}`);
+        console.log(
+          `[Live Stream Sniffer][${env.name}] 已在录制中，跳过: ${roomUrl}`
+        );
         alreadyRecording = true;
       }
     } catch (err) {
@@ -53,12 +55,14 @@ async function sendToBackend(url, title, roomUrl, caption = '') {
         }),
       });
       if (res.ok) {
-        console.log(`[Live Stream Sniffer][${env.name}] 录制请求成功: ${roomUrl}`);
+        console.log(
+          `[Live Stream Sniffer][${env.name}] 录制请求成功: ${roomUrl}`
+        );
       }
       const data = await res.json();
       console.log(`[DEBUG][${env.name}] response:`, JSON.stringify(data));
     } catch (err) {
-      console.error(`[Live Stream Sniffer][${env.name}] 发送录制请求失败:`, err);
+      console.warn(`[Live Stream Sniffer][${env.name}] 发送录制请求失败:`, err);
     }
   }
 
@@ -217,9 +221,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
     // 匹配关注列表中的主播
     getConfig().then((config) => {
-      const matched = config.followedAuthors.find((a) =>
-        tab.title.includes(a)
-      );
+      const matched = config.followedAuthors.find((a) => tab.title.includes(a));
       if (matched) {
         console.log(`🎯 [content] 匹配到目标直播间: ${tab.title}`);
         // video.currentSrc 已是页面选好的清晰度，无需 quality 等待
@@ -326,7 +328,8 @@ async function checkFollowingLivings() {
           const data = await resp.json();
           if (
             data.exists &&
-            (data.data?.status === 'recording' || data.data?.status === 'paused')
+            (data.data?.status === 'recording' ||
+              data.data?.status === 'paused')
           ) {
             anyRecording = true;
             break;
@@ -374,7 +377,7 @@ async function checkFollowingLivings() {
       }
     }
   } catch (err) {
-    console.error('[Live Stream Sniffer] 查询关注列表异常:', err);
+    console.warn('[Live Stream Sniffer] 查询关注列表异常:', err);
   }
 }
 
