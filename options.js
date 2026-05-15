@@ -5,8 +5,7 @@ function renderEnvCard(env) {
   card.className = `env-card ${env.name}`;
   card.innerHTML = `
     <div class="env-header">
-      <span class="env-title">${env.label}</span>
-      <label class="env-toggle">
+      <span class="env-title">${env.label}</span> | <label class="env-toggle">
         <input type="checkbox" class="env-enabled" ${env.enabled ? 'checked' : ''}>
         启用
       </label>
@@ -34,7 +33,10 @@ function getEnvData(env, card) {
 }
 
 async function loadSettings() {
-  const data = await chrome.storage.sync.get(['environments', 'followedAuthors']);
+  const data = await chrome.storage.sync.get([
+    'environments',
+    'followedAuthors',
+  ]);
   const storedEnvs = data.environments || [];
   const container = document.getElementById('envContainer');
   container.innerHTML = '';
@@ -46,7 +48,9 @@ async function loadSettings() {
     container.appendChild(card);
   }
 
-  const authors = data.followedAuthors?.length ? data.followedAuthors : FOLLOWED_AUTHORS;
+  const authors = data.followedAuthors?.length
+    ? data.followedAuthors
+    : FOLLOWED_AUTHORS;
   document.getElementById('followedAuthors').value = authors.join('\n');
 }
 

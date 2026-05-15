@@ -9,6 +9,9 @@
         padding: 10px;
         margin: 0;
       }
+      #app {
+        max-width: 800px;
+      }
       .header {
         font-weight: bold;
         border-bottom: 1px solid #eee;
@@ -24,9 +27,9 @@
         padding: 5px 10px;
         font-size: 12px;
       }
-      input {
-        border: 1px solid #eee;
+      .env-field input {
         width: 320px;
+        border: 1px solid #eee;
         padding: 5px;
         border-radius: 4px;
       }
@@ -44,9 +47,9 @@
         border-color: #00bfff;
       }
       .env-header {
-        display: flex;
+        /* display: flex;
         justify-content: space-between;
-        align-items: center;
+        align-items: center; */
         margin-bottom: 8px;
       }
       .env-title {
@@ -54,9 +57,10 @@
         font-size: 14px;
       }
       .env-toggle {
-        display: flex;
-        align-items: center;
         gap: 6px;
+      }
+      .env-enabled {
+        width: auto;
       }
       .env-field {
         margin-bottom: 6px;
@@ -109,14 +113,21 @@
     </style>
   </head>
   <body>
-    <h3 class="header">多环境配置</h3>
-    <div id="envContainer"></div>
-    <div class="shared-section">
-      <label>关注的主播（每行一个，所有环境共用）：<br />
-        <textarea id="followedAuthors" rows="5" placeholder="KSG无言"></textarea>
-      </label>
+    <div id="app">
+      <h3 class="header">多环境配置</h3>
+      <div id="envContainer"></div>
+      <div class="shared-section">
+        <label
+          >关注的主播（每行一个，所有环境共用）：<br />
+          <textarea
+            id="followedAuthors"
+            rows="5"
+            placeholder="KSG无言"
+          ></textarea>
+        </label>
+      </div>
+      <button id="save" class="btn-send">保存设置</button>
     </div>
-    <button id="save" class="btn-send">保存设置</button>
     <script type="module" src="options.js"></script>
   </body>
 </html>
