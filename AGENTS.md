@@ -23,11 +23,11 @@ No build, no bundler, no package manager. Load as unpacked extension in `chrome:
 - Backend endpoints (configurable in settings):
   - `POST {notifyApiUrl}` with JSON body `{ url, title, room_url, caption }` — start recording.
   - `GET {statusApiUrl}?url={roomUrl}` — check if already recording.
-- `config.js` defines two built-in environments:
-  - `production` → `localhost:1123`
-  - `development` → `localhost:3001`
-  - Settings page has a dropdown to switch; URL fields auto-fill when env changes.
-- `getConfig()` returns `{ env, notifyApiUrl, statusApiUrl, followedAuthors }`. Falls back to old `apiUrl` storage key for backward compatibility.
+- `config.js` defines multiple environments (`production` → `:1123`, `development` → `:3001`).
+  - Each environment has its own toggle, notify API URL, and status API URL.
+  - When `sendToBackend` is called, it loops through all **enabled** environments and sends requests to each.
+  - Author list is shared across all environments.
+- `getConfig()` returns `{ environments: [...], followedAuthors: [...] }`.
 
 ## Testing
 

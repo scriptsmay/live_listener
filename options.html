@@ -30,13 +30,45 @@
         padding: 5px;
         border-radius: 4px;
       }
-      .input {
+      .env-card {
         background: #fff;
-        border: 1px solid #ff8c00;
+        border: 1px solid #ddd;
         border-radius: 8px;
         padding: 12px;
-        margin-bottom: 10px;
-        transition: box-shadow 0.2s;
+        margin-bottom: 12px;
+      }
+      .env-card.production {
+        border-color: #ff8c00;
+      }
+      .env-card.development {
+        border-color: #00bfff;
+      }
+      .env-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 8px;
+      }
+      .env-title {
+        font-weight: bold;
+        font-size: 14px;
+      }
+      .env-toggle {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+      }
+      .env-field {
+        margin-bottom: 6px;
+      }
+      .env-field label {
+        font-size: 12px;
+        color: #666;
+      }
+      .env-field input {
+        width: 100%;
+        box-sizing: border-box;
+        margin-top: 2px;
       }
 
       .btn-send {
@@ -52,46 +84,39 @@
       .btn-send:hover {
         background: #ffa500;
       }
-
       .btn-send:disabled {
         background: #ccc;
       }
       textarea {
         border: 1px solid #eee;
-        width: 320px;
+        width: 100%;
         padding: 5px;
         border-radius: 4px;
         resize: vertical;
         font-family: sans-serif;
         font-size: 12px;
+        box-sizing: border-box;
       }
       .section {
         margin-bottom: 16px;
       }
+      .shared-section {
+        border: 1px solid #eee;
+        border-radius: 8px;
+        padding: 12px;
+        margin-bottom: 12px;
+      }
     </style>
   </head>
   <body>
-    <h3 class="header">API 配置</h3>
-    <div class="section">
-      <label>运行环境：
-        <select id="envSelect">
-          <option value="production">生产环境 (localhost:1123)</option>
-          <option value="development">开发环境 (localhost:3001)</option>
-        </select>
-      </label>
-    </div>
-    <div class="section">
-      <label>录制接口：<input type="text" id="notifyApiUrl" /></label>
-    </div>
-    <div class="section">
-      <label>状态查询接口：<input type="text" id="statusApiUrl" /></label>
-    </div>
-    <div class="section">
-      <label>关注的主播（每行一个）：<br />
+    <h3 class="header">多环境配置</h3>
+    <div id="envContainer"></div>
+    <div class="shared-section">
+      <label>关注的主播（每行一个，所有环境共用）：<br />
         <textarea id="followedAuthors" rows="5" placeholder="KSG无言"></textarea>
       </label>
     </div>
-    <button id="save">保存设置</button>
+    <button id="save" class="btn-send">保存设置</button>
     <script type="module" src="options.js"></script>
   </body>
 </html>

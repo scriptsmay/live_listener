@@ -17,53 +17,59 @@ console.log('[Live Stream Sniffer]KS直播监测插件已启动');
 async function sendToBackend(url, title, roomUrl, caption = '') {
   const config = await getConfig();
 
-  // 先查后端状态，已在录制则跳过
-  try {
-    const resp = await fetch(
-      `${config.statusApiUrl}?url=${encodeURIComponent(roomUrl)}`
-    );
-    const data = await resp.json();
-    if (
-      data.exists &&
-      (data.data?.status === 'recording' || data.data?.status === 'paused')
-    ) {
-      console.log(`[Live Stream Sniffer] 已在录制中，跳过: ${roomUrl}`);
-      chrome.action.setBadgeText({ text: 'HIGH' });
-      chrome.storage.local.set({ [`status_${url}`]: 'auto-recorded' });
-      activeRecordingRoomUrl = roomUrl;
-      return;
+  for (const env of config.environments) {
+    if (!env.enabled) continue;
+
+    // 先查后端状态，已在录制则跳过
+    let alreadyRecording = false;
+    try {
+      const resp = await fetch(
+        `${env.statusApiUrl}?url=${encodeURIComponent(roomUrl)}`
+      );
+      const data = await resp.json();
+      if (
+        data.exists &&
+        (data.data?.status === 'recording' || data.data?.status === 'paused')
+      ) {
+        console.log(`[Live Stream Sniffer][${env.name}] 已在录制中，跳过: ${roomUrl}`);
+        alreadyRecording = true;
+      }
+    } catch (err) {
+      console.warn(`[Live Stream Sniffer][${env.name}] 状态查询失败:`, err);
     }
-  } catch (err) {
-    console.warn('[Live Stream Sniffer] 状态查询失败，直接发送录制请求:', err);
+
+    if (alreadyRecording) continue;
+
+    // 未在录制，发送录制请求
+    try {
+      const res = await fetch(env.notifyApiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url,
+          title: `AUTO_${title}`,
+          room_url: roomUrl,
+          caption,
+        }),
+      });
+      if (res.ok) {
+        console.log(`[Live Stream Sniffer][${env.name}] 录制请求成功: ${roomUrl}`);
+      }
+      const data = await res.json();
+      console.log(`[DEBUG][${env.name}] response:`, JSON.stringify(data));
+    } catch (err) {
+      console.error(`[Live Stream Sniffer][${env.name}] 发送录制请求失败:`, err);
+    }
   }
 
-  // 未在录制，发送录制请求
-  try {
-    const res = await fetch(config.notifyApiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        url,
-        title: `AUTO_${title}`,
-        room_url: roomUrl,
-        caption,
-      }),
-    });
-    if (res.ok) {
-      chrome.action.setBadgeText({ text: 'HIGH' });
-      chrome.storage.local.set({ [`status_${url}`]: 'auto-recorded' });
-      activeRecordingRoomUrl = roomUrl;
-    }
-    const data = await res.json();
-    console.log('[DEBUG]response----->', JSON.stringify(data));
-  } catch (err) {
-    console.error('[Live Stream Sniffer] 发送录制请求失败:', err);
-  }
+  // 任一环境成功即可标记
+  chrome.action.setBadgeText({ text: 'HIGH' });
+  chrome.storage.local.set({ [`status_${url}`]: 'auto-recorded' });
+  activeRecordingRoomUrl = roomUrl;
 }
 
 /**
  * 自动选择最佳清晰度的视频下载地址并发送给后端
- * @param {*} details
  */
 function autoChooseBest(details) {
   const tabId = details.tabId;
@@ -310,23 +316,26 @@ async function checkFollowingLivings() {
     // 如果已有正在录制的直播间，先查后端状态，无需每次都请求快手接口
     if (activeRecordingRoomUrl) {
       const config = await getConfig();
-      try {
-        const resp = await fetch(
-          `${config.statusApiUrl}?url=${encodeURIComponent(activeRecordingRoomUrl)}`
-        );
-        const data = await resp.json();
-        if (
-          data.exists &&
-          (data.data?.status === 'recording' || data.data?.status === 'paused')
-        ) {
-          console.log('[Live Stream Sniffer] 仍在录制中，跳过关注列表查询');
-          return;
-        }
-      } catch (err) {
-        console.warn(
-          '[Live Stream Sniffer] 状态查询失败，降级为查询关注列表:',
-          err
-        );
+      let anyRecording = false;
+      for (const env of config.environments) {
+        if (!env.enabled) continue;
+        try {
+          const resp = await fetch(
+            `${env.statusApiUrl}?url=${encodeURIComponent(activeRecordingRoomUrl)}`
+          );
+          const data = await resp.json();
+          if (
+            data.exists &&
+            (data.data?.status === 'recording' || data.data?.status === 'paused')
+          ) {
+            anyRecording = true;
+            break;
+          }
+        } catch (_) {}
+      }
+      if (anyRecording) {
+        console.log('[Live Stream Sniffer] 仍在录制中，跳过关注列表查询');
+        return;
       }
       // 不在录制中了，清除标记，下次正常查询关注列表
       activeRecordingRoomUrl = null;
