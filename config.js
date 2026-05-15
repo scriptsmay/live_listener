@@ -1,6 +1,19 @@
 // config.js
-export const NOTIFY_API_URL = 'http://localhost:1123/api/notify/live_download';
-export const STATUS_API_URL = 'http://localhost:1123/api/notify/status';
+export const ENVIRONMENTS = {
+  production: {
+    label: '生产环境',
+    notifyApiUrl: 'http://localhost:1123/api/notify/live_download',
+    statusApiUrl: 'http://localhost:1123/api/notify/status',
+  },
+  development: {
+    label: '开发环境',
+    notifyApiUrl: 'http://localhost:3001/api/notify/live_download',
+    statusApiUrl: 'http://localhost:3001/api/notify/status',
+  },
+};
+
+export const NOTIFY_API_URL = ENVIRONMENTS.production.notifyApiUrl;
+export const STATUS_API_URL = ENVIRONMENTS.production.statusApiUrl;
 
 // 定义关键词对应的显示文字和颜色
 export const QUALITY_LABELS = [
@@ -21,6 +34,7 @@ export const QUALITY_WEIGHTS = {
 };
 
 export const DEFAULT_SETTINGS = {
+  env: 'production',
   notifyApiUrl: NOTIFY_API_URL,
   statusApiUrl: STATUS_API_URL,
   enableNotification: false,
@@ -37,9 +51,13 @@ export const LIVING_API_URL = 'https://live.kuaishou.com/live_api/follow/living'
 
 export async function getConfig() {
   const storage = await chrome.storage.sync.get(null);
+  const env = storage.env || DEFAULT_SETTINGS.env;
+  const envUrls = ENVIRONMENTS[env] || ENVIRONMENTS.production;
+  const manualUrls = storage.notifyApiUrl || storage.apiUrl;
   return {
-    notifyApiUrl: storage.notifyApiUrl || storage.apiUrl || DEFAULT_SETTINGS.notifyApiUrl,
-    statusApiUrl: storage.statusApiUrl || DEFAULT_SETTINGS.statusApiUrl,
+    env,
+    notifyApiUrl: manualUrls || envUrls.notifyApiUrl,
+    statusApiUrl: storage.statusApiUrl || envUrls.statusApiUrl,
     followedAuthors: storage.hasOwnProperty('followedAuthors')
       ? storage.followedAuthors
       : FOLLOWED_AUTHORS,

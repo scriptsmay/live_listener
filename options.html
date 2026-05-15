@@ -73,6 +73,14 @@
   <body>
     <h3 class="header">API 配置</h3>
     <div class="section">
+      <label>运行环境：
+        <select id="envSelect">
+          <option value="production">生产环境 (localhost:1123)</option>
+          <option value="development">开发环境 (localhost:3001)</option>
+        </select>
+      </label>
+    </div>
+    <div class="section">
       <label>录制接口：<input type="text" id="notifyApiUrl" /></label>
     </div>
     <div class="section">
