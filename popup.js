@@ -23,7 +23,9 @@ function renderList() {
     }
 
     // 倒序排列，最新的流在最上面
-    [...streams].reverse().forEach((url) => {
+    [...streams].reverse().forEach((stream) => {
+      const { url, title, roomUrl } = stream;
+
       const quality = getQualityInfo(url);
       const item = document.createElement('div');
       item.className = 'stream-item';
@@ -35,7 +37,7 @@ function renderList() {
         </div>
         <div class="url-display">${url}</div>
         <div class="action-area">
-          <button class="btn-send" data-url="${url}">🚀 开始录制</button>
+          <button class="btn-send" data-url="${url}" data-title="${title}" data-room-url="${roomUrl}">🚀 开始录制</button>
         </div>
       `;
       listDiv.appendChild(item);
@@ -83,33 +85,31 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 document.addEventListener('click', async (e) => {
   if (e.target.classList.contains('btn-send')) {
     const streamUrl = e.target.getAttribute('data-url');
-
-    // --- 核心逻辑：获取当前活动的标签页 ---
-    const [tab] = await chrome.tabs.query({
-      active: true,
-      currentWindow: true,
-    });
-    const tabTitle = tab?.title || '未知标题';
-    const tabUrl = tab?.url || '';
-    // ------------------------------------
+    const title = e.target.getAttribute('data-title');
+    const roomUrl = e.target.getAttribute('data-room-url');
 
     const config = await getConfig();
 
-    fetch(config.notifyApiUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        url: streamUrl,
-        title: tabTitle,
-        room_url: tabUrl,
-      }),
-    })
-      .then((res) => {
-        e.target.innerText = '✅ 已发送';
-        e.target.style.background = '#4CAF50';
-        console.log('发送成功：', res);
+    // 给每个启用的环境发送请求
+    for (const env of config.environments) {
+      if (!env.enabled) continue;
+
+      fetch(env.notifyApiUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: streamUrl,
+          title: title,
+          room_url: roomUrl,
+        }),
       })
-      .catch((err) => alert('后端未启动或发送失败'));
+        .then((res) => {
+          e.target.innerText = '✅ 已发送';
+          e.target.style.background = '#4CAF50';
+          console.log('发送成功：', res);
+        })
+        .catch((err) => alert('后端未启动或发送失败'));
+    }
   }
 
   // 2. 修正清空按钮逻辑：检查 e.target.id

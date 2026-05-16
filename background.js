@@ -6,6 +6,8 @@ import {
 } from './config.js';
 
 let lastUrl = ''; // 简单防抖：防止同一地址短时间内多次弹出
+
+// 检测到的直播流，应该是一个对象，包含 url、title、roomUrl 等信息，方便后续扩展
 let detectedStreams = [];
 let autoRecordTimer = null;
 let bestUrl = '';
@@ -120,8 +122,26 @@ function markKuaishouVisited(url) {
   }
 }
 
+function getTabInfo(tabId) {
+  return new Promise((resolve) => {
+    // 使用 tabId 获取标签页的详细信息
+    chrome.tabs.get(tabId, (tab) => {
+      if (chrome.runtime.lastError) {
+        // 处理可能的错误，比如标签页在请求完成前被关闭
+        console.error(
+          `获取标签页 ${details.tabId} 失败: ${chrome.runtime.lastError.message}`
+        );
+        return resolve(null);
+      }
+      // console.log('标签页 URL:', tab.url);
+      // console.log('页面标题:', tab.title);
+      resolve(tab);
+    });
+  });
+}
+
 chrome.webRequest.onBeforeRequest.addListener(
-  (details) => {
+  async (details) => {
     markKuaishouVisited(details.url);
 
     // 2. 只要包含 .flv 且 URL 还没被处理过就拦截
@@ -133,9 +153,36 @@ chrome.webRequest.onBeforeRequest.addListener(
         // return;
       }
 
+      // 获取当前tab的 url 作为直播间地址 roomUrl，后续发送给后端用于匹配和展示
+      if (details.tabId === -1) {
+        console.log('此请求不关联任何标签页，跳过处理。');
+        return;
+      }
+      const tab = await getTabInfo(details.tabId);
+      if (!tab) {
+        console.log('无法获取标签页信息，跳过处理。');
+        return;
+      }
       lastUrl = details.url;
-      console.log('✅ 捕获到直播流地址:', details.url);
-      detectedStreams.push(details.url);
+
+      const roomUrl = tab.url || '';
+      const title = tab.title;
+
+      const detectedInfo = {
+        url: details.url,
+        title,
+        roomUrl,
+      };
+      detectedStreams.push(detectedInfo);
+      console.log(
+        '✅ 捕获到直播流地址:',
+        details.url,
+        '| 直播间 URL:',
+        roomUrl,
+        '标题:',
+        title
+      );
+      // detectedStreams.push(details.url);
 
       // 更新图标上的数字
       chrome.action.setBadgeText({ text: detectedStreams.length.toString() });
