@@ -285,7 +285,7 @@ const notifiedRooms = new Set();
 
 // 在 SW 重启时，从本地存储恢复已通知记录
 chrome.storage.local.get('notifiedRooms', (result) => {
-  if (result.notifiedRooms) {
+  if (result && result.notifiedRooms) {
     for (const id of result.notifiedRooms) notifiedRooms.add(id);
   }
 });
