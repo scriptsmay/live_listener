@@ -9,6 +9,10 @@
         padding: 10px;
         margin: 0;
       }
+      #notice-content {
+        font-size: 12px;
+        margin-bottom: 20px;
+      }
       .header {
         font-weight: bold;
         border-bottom: 1px solid #eee;
@@ -111,12 +115,22 @@
     </style>
   </head>
   <body>
+    <div id="notice">
+      <div class="header">
+        后台监听状态<span id="status"
+          ><label class="toggle-label">
+            <input type="checkbox" id="monitorToggle" /> 启用
+          </label></span
+        >
+      </div>
+      <div id="notice-content">
+        <div>上次请求时间：<span id="lastReqTime"></span></div>
+        <div>上次请求结果：<span id="lastResult"></span></div>
+      </div>
+    </div>
     <div class="header">
       <span>检测到的直播流</span>
-      <div style="display:flex;gap:8px;align-items:center">
-        <label class="toggle-label">
-          <input type="checkbox" id="monitorToggle" /> 后台监听
-        </label>
+      <div style="display: flex; gap: 8px; align-items: center">
         <button class="btn-clear" id="clearBtn">清空</button>
       </div>
     </div>

@@ -357,6 +357,46 @@ function randomDelay(min, max) {
   );
 }
 
+/**
+ * 存储上次请求关注列表的结果
+ * @param {*} statusResult
+ */
+function setFollowReqStatus(statusResult) {
+  chrome.storage.local.set({
+    lastReqStatus: {
+      time: Date.now(),
+      result: statusResult,
+    },
+  });
+}
+
+/**
+ * 检查关注的主播是否正在直播
+ *
+ * 该函数定期查询快手关注列表，检测已关注的主播是否开播。
+ * 如果检测到关注的主播开播，会触发相应的录制处理逻辑。
+ *
+ * 优化策略：
+ * - 如果已有正在录制的直播间，先检查后端录制状态，避免频繁请求快手接口
+ * - 添加随机延迟防止被风控
+ * - 仅在访问过快手页面且配置了关注主播时才执行查询
+ *
+ * @async
+ * @function checkFollowingLivings
+ * @returns {Promise<void>} 无返回值，通过副作用处理检测结果
+ *
+ * @description
+ * 执行流程：
+ * 1. 检查监控是否启用，未启用则直接返回
+ * 2. 如果有正在录制的直播间，检查后端录制状态
+ *    - 如果仍在录制中（recording或paused状态），跳过本次查询
+ *    - 如果不在录制中，清除录制标记，继续正常查询
+ * 3. 检查是否访问过快手页面，未访问则返回
+ * 4. 获取配置的关注主播列表，为空则返回
+ * 5. 添加2-6秒随机延迟，避免被风控
+ * 6. 请求快手关注列表API，获取正在直播的主播
+ * 7. 遍历直播列表，匹配关注的主播，触发录制处理
+ */
 async function checkFollowingLivings() {
   try {
     const { monitorEnabled } = await chrome.storage.sync.get('monitorEnabled');
@@ -404,17 +444,22 @@ async function checkFollowingLivings() {
 
     console.log('[Live Stream Sniffer] 查询关注列表，检测开播中...');
     const resp = await fetch(LIVING_API_URL, { credentials: 'include' });
+
     if (!resp.ok) {
       console.warn(`[Live Stream Sniffer] 查询关注列表失败: ${resp.status}`);
+      setFollowReqStatus({ status: resp.status, message: '请求失败' });
       return;
     }
     const data = await resp.json();
     const list = data?.data?.list || [];
+
+    const onlineAuthors = [];
     for (const item of list) {
       const author = item?.author;
       if (!author) continue;
       if (authors.includes(author.name)) {
         console.log(`🎯 检测到关注的主播开播: ${author.name}`);
+        onlineAuthors.push(author.name);
         handleStreamerOnline(
           author,
           item.id,
@@ -423,6 +468,11 @@ async function checkFollowingLivings() {
         );
       }
     }
+    setFollowReqStatus({
+      status: 200,
+      message: '✅ 查询关注列表成功',
+      onlineAuthors: onlineAuthors.join(','),
+    });
   } catch (err) {
     console.warn('[Live Stream Sniffer] 查询关注列表异常:', err);
   }

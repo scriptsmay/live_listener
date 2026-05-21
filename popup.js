@@ -58,8 +58,28 @@ function renderList() {
   });
 }
 
+// 提取一个公用的更新函数，避免代码重复
+function updateRequestDataUI() {
+  chrome.storage.local.get(['lastReqStatus'], (localResult) => {
+    const { time, result } = localResult.lastReqStatus || {};
+
+    const domTime = document.getElementById('lastReqTime');
+    if (domTime && time) {
+      domTime.innerText = new Date(time).toLocaleTimeString();
+    }
+
+    const el = document.getElementById('lastResult');
+    if (el && result) {
+      // 根据你的需求选择显示方式
+      el.innerText =
+        typeof result === 'object' ? JSON.stringify(result, null, 2) : result;
+    }
+  });
+}
+
 // 2. 页面首次打开时，执行一次初始化渲染
 renderList();
+updateRequestDataUI();
 
 // 3. 读取并初始化监听开关状态
 chrome.storage.sync.get('monitorEnabled', (result) => {
@@ -74,10 +94,17 @@ chrome.storage.sync.get('monitorEnabled', (result) => {
 
 // 4. 核心：监听存储变化
 chrome.storage.onChanged.addListener((changes, areaName) => {
-  // 检查是否是我们要找的 local 存储，且 streams 发生了变化
-  if (areaName === 'local' && changes.streams) {
-    console.log('检测到数据更新，正在重新渲染列表...');
-    renderList(); // 数据变了，立即刷新 UI
+  if (areaName !== 'local') return;
+
+  // 使用策略模式或简单的逻辑分支
+  if (changes.streams) {
+    console.log('Streams 更新，刷新列表');
+    renderList();
+  }
+
+  // 2. 检查特定 Key 是否存在
+  if (changes.lastReqStatus && changes.lastReqStatus.newValue) {
+    updateRequestDataUI();
   }
 });
 
