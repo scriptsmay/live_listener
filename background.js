@@ -51,7 +51,7 @@ async function sendToBackend(url, title, roomUrl, caption = '') {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           url,
-          title: `AUTO_${title}`,
+          title: `${title}`,
           room_url: roomUrl,
           caption,
         }),
