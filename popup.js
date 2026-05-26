@@ -65,7 +65,7 @@ function updateRequestDataUI() {
 
     const domTime = document.getElementById('lastReqTime');
     if (domTime && time) {
-      domTime.innerText = new Date(time).toLocaleTimeString();
+      domTime.innerText = new Date(time).toLocaleString();
     }
 
     const el = document.getElementById('lastResult');
