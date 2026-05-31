@@ -1,4 +1,4 @@
-import { DEFAULT_ENVIRONMENTS, FOLLOWED_AUTHORS } from './config.js';
+import { DEFAULT_ENVIRONMENTS, getConfig } from './config.js';
 
 function renderEnvCard(env) {
   const card = document.createElement('div');
@@ -18,8 +18,22 @@ function renderEnvCard(env) {
       <label>状态查询接口</label>
       <input type="text" class="env-status-url" value="${env.statusApiUrl}">
     </div>
+    <div class="env-field">
+      <label>关注的主播（每行一个）</label>
+      <textarea class="env-followed-authors" rows="5" placeholder="KSG无言"></textarea>
+    </div>
   `;
+  card.querySelector('.env-followed-authors').value = (
+    env.followedAuthors || []
+  ).join('\n');
   return card;
+}
+
+function parseAuthors(raw) {
+  return raw
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean);
 }
 
 function getEnvData(env, card) {
@@ -29,29 +43,22 @@ function getEnvData(env, card) {
     enabled: card.querySelector('.env-enabled').checked,
     notifyApiUrl: card.querySelector('.env-notify-url').value,
     statusApiUrl: card.querySelector('.env-status-url').value,
+    followedAuthors: parseAuthors(
+      card.querySelector('.env-followed-authors').value
+    ),
   };
 }
 
 async function loadSettings() {
-  const data = await chrome.storage.sync.get([
-    'environments',
-    'followedAuthors',
-  ]);
-  const storedEnvs = data.environments || [];
+  const config = await getConfig();
   const container = document.getElementById('envContainer');
   container.innerHTML = '';
 
   for (const def of DEFAULT_ENVIRONMENTS) {
-    const stored = storedEnvs.find((e) => e.name === def.name);
-    const merged = { ...def, ...stored };
+    const merged = config.environments.find((e) => e.name === def.name) || def;
     const card = renderEnvCard(merged);
     container.appendChild(card);
   }
-
-  const authors = data.followedAuthors?.length
-    ? data.followedAuthors
-    : FOLLOWED_AUTHORS;
-  document.getElementById('followedAuthors').value = authors.join('\n');
 }
 
 document.getElementById('save').addEventListener('click', () => {
@@ -63,13 +70,7 @@ document.getElementById('save').addEventListener('click', () => {
     environments.push(env);
   }
 
-  const raw = document.getElementById('followedAuthors').value;
-  const authors = raw
-    .split('\n')
-    .map((s) => s.trim())
-    .filter(Boolean);
-
-  chrome.storage.sync.set({ environments, followedAuthors: authors }, () => {
+  chrome.storage.sync.set({ environments }, () => {
     chrome.runtime.sendMessage({ action: 'recheck_following' });
     alert('配置已更新，已开始重新检测');
   });

@@ -202,40 +202,12 @@
         margin-bottom: 24px;
       }
 
-      .shared-section {
-        border: 2px solid var(--gray-100);
-        border-radius: 16px;
-        padding: 24px;
-        margin-bottom: 24px;
-      }
-
-      .shared-section label {
-        font-size: 16px;
-        color: var(--gray-600);
-        font-weight: 500;
-        display: block;
-        margin-bottom: 12px;
-      }
-
-      .shared-section label br {
-        display: none;
-      }
     </style>
   </head>
   <body>
     <div id="app">
       <h3 class="header">多环境配置</h3>
       <div id="envContainer"></div>
-      <div class="shared-section">
-        <label
-          >关注的主播（每行一个，所有环境共用）
-          <textarea
-            id="followedAuthors"
-            rows="6"
-            placeholder="KSG无言"
-          ></textarea>
-        </label>
-      </div>
       <button id="save" class="btn-send">保存设置</button>
     </div>
     <script type="module" src="options.js"></script>
