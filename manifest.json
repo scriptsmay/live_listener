@@ -7,7 +7,9 @@
     "*://*.kuaishou.com/*",
     "*://*.yximgs.com/*",
     "http://localhost:1123/*",
-    "http://localhost:3001/*"
+    "http://localhost:*/*",
+    "http://192.168.31.247:*/*",
+    "http://192.168.31.247:11123/*"
   ],
   "background": {
     "service_worker": "background.js",

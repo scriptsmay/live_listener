@@ -37,7 +37,7 @@ function renderEnvCard(env) {
   baseUrl.type = 'text';
   baseUrl.className = 'env-base-url';
   baseUrl.value = env.baseUrl;
-  baseUrl.placeholder = 'http://localhost:1123';
+  baseUrl.placeholder = env.baseUrl;
 
   const authors = document.createElement('textarea');
   authors.className = 'env-followed-authors';
@@ -73,8 +73,32 @@ function isValidBaseUrl(baseUrl) {
   }
 }
 
+function isHostAllowed(patternHost, hostname) {
+  if (patternHost === '*') return true;
+  if (patternHost.startsWith('*.')) {
+    const domain = patternHost.slice(2);
+    return hostname === domain || hostname.endsWith(`.${domain}`);
+  }
+  return patternHost === hostname;
+}
+
+function matchesHostPermission(pattern, url) {
+  const match = pattern.match(/^(\*|https?|file):\/\/([^/:]+)(?::(\*|\d+))?\//);
+  if (!match) return false;
+
+  const [, scheme, host, port] = match;
+  const urlScheme = url.protocol.slice(0, -1);
+  if (scheme !== '*' && scheme !== urlScheme) return false;
+  if (!isHostAllowed(host, url.hostname)) return false;
+  if (port && port !== '*' && port !== url.port) return false;
+
+  return true;
+}
+
 function isAllowedBaseUrl(baseUrl) {
-  return DEFAULT_ENVIRONMENTS.some((env) => env.baseUrl === baseUrl);
+  const url = new URL(baseUrl);
+  const permissions = chrome.runtime.getManifest().host_permissions || [];
+  return permissions.some((pattern) => matchesHostPermission(pattern, url));
 }
 
 function getEnvData(env, card) {

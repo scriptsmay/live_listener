@@ -17,7 +17,7 @@ function buildEnvironment(baseUrl, overrides = {}) {
 
 // 每个环境一个配置块，可在 options 页面独立开关
 export const DEFAULT_ENVIRONMENTS = [
-  buildEnvironment('http://localhost:1123', {
+  buildEnvironment('http://192.168.31.247:11123', {
     name: 'production',
     label: '生产环境',
     enabled: true,
