@@ -36,6 +36,24 @@ function findEnvironmentsByAuthorName(config, authorName) {
   );
 }
 
+function isKuaishouLiveRoomUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return (
+      parsed.hostname === 'live.kuaishou.com' &&
+      /^\/u\/[^/?#]+/.test(parsed.pathname)
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
+function getLiveRoomUrlFromRequest(details, tab) {
+  return [details.documentUrl, tab?.url].find((url) =>
+    isKuaishouLiveRoomUrl(url)
+  );
+}
+
 async function sendToEnvironments(environments, url, title, roomUrl, caption = '') {
   let activeCount = 0;
 
@@ -111,38 +129,33 @@ async function sendToBackend(url, title, roomUrl, caption = '') {
 /**
  * 自动选择最佳清晰度的视频下载地址并发送给后端
  */
-function autoChooseBest(details, targetEnvs) {
-  const tabId = details.tabId;
+function autoChooseBest(details, targetEnvs, roomUrl, title) {
+  if (!isKuaishouLiveRoomUrl(roomUrl)) return;
 
-  chrome.tabs.get(tabId, (tab) => {
-    if (chrome.runtime.lastError || !tab) return;
-    const roomUrl = tab.url;
-
-    // --- 核心：清晰度判定 ---
-    let weight = 0;
-    for (let key in QUALITY_WEIGHTS) {
-      if (details.url.includes(key)) {
-        weight = QUALITY_WEIGHTS[key];
-        break;
-      }
+  // --- 核心：清晰度判定 ---
+  let weight = 0;
+  for (let key in QUALITY_WEIGHTS) {
+    if (details.url.includes(key)) {
+      weight = QUALITY_WEIGHTS[key];
+      break;
     }
+  }
 
-    // 如果这个流比刚才抓到的更清晰，则更新
-    if (weight > currentBestLevel) {
-      currentBestLevel = weight;
-      bestUrl = details.url;
-      console.log(`🚀 发现更优画质 (${weight}):`, details.url);
-    }
+  // 如果这个流比刚才抓到的更清晰，则更新
+  if (weight > currentBestLevel) {
+    currentBestLevel = weight;
+    bestUrl = details.url;
+    console.log(`🚀 发现更优画质 (${weight}):`, details.url);
+  }
 
-    // --- 延迟 2 秒发送，等待所有潜在的清晰度流都冒出来 ---
-    if (autoRecordTimer) clearTimeout(autoRecordTimer);
-    autoRecordTimer = setTimeout(() => {
-      sendToEnvironments(targetEnvs, bestUrl, tab.title, roomUrl);
-      // 重置状态，准备下一次可能的切换（比如主播断流重开）
-      currentBestLevel = -1;
-      bestUrl = '';
-    }, 2000);
-  });
+  // --- 延迟 2 秒发送，等待所有潜在的清晰度流都冒出来 ---
+  if (autoRecordTimer) clearTimeout(autoRecordTimer);
+  autoRecordTimer = setTimeout(() => {
+    sendToEnvironments(targetEnvs, bestUrl, title, roomUrl);
+    // 重置状态，准备下一次可能的切换（比如主播断流重开）
+    currentBestLevel = -1;
+    bestUrl = '';
+  }, 2000);
 }
 
 // 标记是否访问过快手页面（前置条件：有 cookie 才能调 API）
@@ -197,15 +210,20 @@ chrome.webRequest.onBeforeRequest.addListener(
         console.log('无法获取标签页信息，跳过处理。');
         return;
       }
+      const roomUrl = getLiveRoomUrlFromRequest(details, tab) || '';
+      if (!isKuaishouLiveRoomUrl(roomUrl)) {
+        console.log('非直播间页面捕获到流请求，跳过:', roomUrl);
+        return;
+      }
       lastUrl = details.url;
 
-      const roomUrl = tab.url || '';
       const title = tab.title;
 
       const detectedInfo = {
         url: details.url,
         title,
         roomUrl,
+        capturedAt: Date.now(),
       };
       detectedStreams.push(detectedInfo);
       console.log(
@@ -239,7 +257,7 @@ chrome.webRequest.onBeforeRequest.addListener(
                 .map((env) => env.name)
                 .join(', ')}`
             );
-            autoChooseBest(details, targetEnvs);
+            autoChooseBest(details, targetEnvs, roomUrl, title);
           }
         });
       });
@@ -291,6 +309,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     const url = request.url;
     const tab = sender.tab;
     if (!tab || !tab.title) return;
+    if (!isKuaishouLiveRoomUrl(tab.url)) {
+      console.log('非直播间页面捕获到 video 地址，跳过:', tab.url);
+      return true;
+    }
 
     // 与 webRequest 捕获去重
     if (url === lastUrl) return;
@@ -301,6 +323,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       url,
       title: tab.title,
       roomUrl: tab.url,
+      capturedAt: Date.now(),
     });
     chrome.action.setBadgeText({ text: detectedStreams.length.toString() });
     chrome.action.setBadgeBackgroundColor({ color: '#ff5000' });

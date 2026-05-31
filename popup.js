@@ -7,9 +7,62 @@ function getQualityInfo(url) {
   return { label: '未知', color: '#666' };
 }
 
+function padTime(value) {
+  return `${value}`.padStart(2, '0');
+}
+
+function formatStreamTime(timestamp) {
+  const date = timestamp ? new Date(timestamp) : new Date();
+  if (Number.isNaN(date.getTime())) return '--';
+
+  const now = new Date();
+  const time = `${padTime(date.getHours())}:${padTime(date.getMinutes())}`;
+  const sameDay =
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate();
+
+  if (sameDay) return time;
+  return `${padTime(date.getMonth() + 1)}-${padTime(date.getDate())} ${time}`;
+}
+
+function isKuaishouLiveRoomUrl(url) {
+  try {
+    const parsed = new URL(url);
+    return (
+      parsed.hostname === 'live.kuaishou.com' &&
+      /^\/u\/[^/?#]+/.test(parsed.pathname)
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
+function normalizeStream(stream) {
+  if (!stream || typeof stream === 'string') {
+    return {
+      url: stream || '',
+      title: '未知直播',
+      roomUrl: '',
+      capturedAt: null,
+    };
+  }
+
+  return {
+    url: stream.url || '',
+    title: stream.title || '未知直播',
+    roomUrl: stream.roomUrl || '',
+    capturedAt: stream.capturedAt || null,
+  };
+}
+
 function renderList() {
   chrome.storage.local.get(['streams'], (result) => {
-    const streams = result.streams || [];
+    const streams = (result.streams || [])
+      .map(normalizeStream)
+      .filter(
+        (stream) => !stream.roomUrl || isKuaishouLiveRoomUrl(stream.roomUrl)
+      );
     const listDiv = document.getElementById('list');
     const emptyState = document.getElementById('emptyState');
     const streamCount = document.getElementById('streamCount');
@@ -25,21 +78,63 @@ function renderList() {
     emptyState.classList.add('hidden');
 
     [...streams].reverse().forEach((stream) => {
-      const { url, title, roomUrl } = stream;
+      const { url, title, roomUrl, capturedAt } = stream;
       const quality = getQualityInfo(url);
       const item = document.createElement('div');
       item.className = 'stream-item';
 
-      item.innerHTML = `
-        <div class="stream-meta">
-          <span class="quality-tag" style="background: ${quality.color}">${quality.label}</span>
-          <span class="stream-type">FLV</span>
-        </div>
-        <div class="url-display">${url}</div>
-        <button class="btn-send" data-url="${url}" data-title="${title}" data-room-url="${roomUrl}">
-          🚀 开始录制
-        </button>
-      `;
+      const head = document.createElement('div');
+      head.className = 'stream-head';
+
+      const titleRow = document.createElement('div');
+      titleRow.className = 'stream-title-row';
+
+      const titleEl = document.createElement('div');
+      titleEl.className = 'stream-title';
+      titleEl.textContent = title;
+
+      const timeEl = document.createElement('span');
+      timeEl.className = 'stream-time';
+      timeEl.textContent = formatStreamTime(capturedAt);
+
+      titleRow.append(titleEl, timeEl);
+
+      const tags = document.createElement('div');
+      tags.className = 'stream-tags';
+
+      const qualityTag = document.createElement('span');
+      qualityTag.className = 'quality-tag';
+      qualityTag.style.background = quality.color;
+      qualityTag.textContent = quality.label;
+
+      const typeTag = document.createElement('span');
+      typeTag.className = 'stream-type';
+      typeTag.textContent = 'FLV';
+
+      tags.append(qualityTag, typeTag);
+      head.append(titleRow, tags);
+
+      const roomLink = document.createElement(roomUrl ? 'a' : 'div');
+      roomLink.className = 'stream-room';
+      roomLink.textContent = roomUrl || '未记录直播间地址';
+      if (roomUrl) {
+        roomLink.href = roomUrl;
+        roomLink.target = '_blank';
+        roomLink.rel = 'noreferrer';
+      }
+
+      const urlDisplay = document.createElement('div');
+      urlDisplay.className = 'url-display';
+      urlDisplay.textContent = url;
+
+      const button = document.createElement('button');
+      button.className = 'btn-send';
+      button.dataset.url = url;
+      button.dataset.title = title;
+      button.dataset.roomUrl = roomUrl;
+      button.textContent = '🚀 开始录制';
+
+      item.append(head, roomLink, urlDisplay, button);
       listDiv.appendChild(item);
 
       const currentBtn = item.querySelector('.btn-send');

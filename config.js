@@ -32,25 +32,34 @@ export const DEFAULT_ENVIRONMENTS = [
 
 // 定义关键词对应的显示文字和颜色
 export const QUALITY_LABELS = [
-  { key: 'FhdL4', label: '蓝光 8M', color: '#ff5000' },
-  { key: 'Fhd', label: '全高清', color: '#ff8c00' },
-  { key: 'HdL0', label: '高清', color: '#00bfff' },
-  { key: 'HdL', label: '标准', color: '#1e90ff' },
+  { key: 'Ultra4k', label: '4K', color: '#8b5cf6' },
+  { key: 'FhdL4', label: '1080p 8M', color: '#ff5000' },
+  { key: 'FhdL3', label: '1080p 6M', color: '#f36411' },
+  { key: 'FhdL1', label: '1080p 2M', color: '#ff7a1a' },
+  { key: 'Fhd', label: '1080p', color: '#ff8c00' },
+  { key: 'HdL0', label: '超清', color: '#00bfff' },
+  { key: 'HdL', label: '720p', color: '#1e90ff' },
   { key: 'Sd', label: '标清', color: '#999' },
+  { key: 'Ld', label: '流畅', color: '#ccc' },
 ];
 
 // 定义清晰度权重
 export const QUALITY_WEIGHTS = {
+  Ultra4k: 120,
   FhdL4: 100,
-  Fhd: 90,
+  FhdL3: 90,
+  FhdL1: 84,
+  Fhd: 80,
   HdL0: 50,
   HdL: 40,
   Sd: 10,
+  Ld: 0,
 };
 
 export const POLL_INTERVAL_MINUTES = 1;
 
-export const LIVING_API_URL = 'https://live.kuaishou.com/live_api/follow/living';
+export const LIVING_API_URL =
+  'https://live.kuaishou.com/live_api/follow/living';
 
 function normalizeAuthors(authors) {
   return Array.isArray(authors)
