@@ -5,7 +5,7 @@ function renderEnvCard(env) {
   card.className = `env-card ${env.name}`;
   card.innerHTML = `
     <div class="env-header">
-      <span class="env-title">${env.label}</span> | <label class="env-toggle">
+      <span class="env-title">${env.label}</span><label class="env-toggle">
         <input type="checkbox" class="env-enabled" ${env.enabled ? 'checked' : ''}>
         启用
       </label>

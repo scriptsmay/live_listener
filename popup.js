@@ -7,58 +7,54 @@ function getQualityInfo(url) {
   return { label: '未知', color: '#666' };
 }
 
-// 封装渲染逻辑，方便多次调用
 function renderList() {
   chrome.storage.local.get(['streams'], (result) => {
     const streams = result.streams || [];
     const listDiv = document.getElementById('list');
+    const emptyState = document.getElementById('emptyState');
+    const streamCount = document.getElementById('streamCount');
 
-    // 清空旧列表，防止重复堆叠
     listDiv.innerHTML = '';
+    streamCount.textContent = streams.length;
 
     if (streams.length === 0) {
-      listDiv.innerHTML =
-        '<p style="color: #999; text-align: center;">暂无流地址</p>';
+      emptyState.classList.remove('hidden');
       return;
     }
 
-    // 倒序排列，最新的流在最上面
+    emptyState.classList.add('hidden');
+
     [...streams].reverse().forEach((stream) => {
       const { url, title, roomUrl } = stream;
-
       const quality = getQualityInfo(url);
       const item = document.createElement('div');
       item.className = 'stream-item';
 
       item.innerHTML = `
-        <div class="stream-info">
+        <div class="stream-meta">
           <span class="quality-tag" style="background: ${quality.color}">${quality.label}</span>
           <span class="stream-type">FLV</span>
         </div>
         <div class="url-display">${url}</div>
-        <div class="action-area">
-          <button class="btn-send" data-url="${url}" data-title="${title}" data-room-url="${roomUrl}">🚀 开始录制</button>
-        </div>
+        <button class="btn-send" data-url="${url}" data-title="${title}" data-room-url="${roomUrl}">
+          🚀 开始录制
+        </button>
       `;
       listDiv.appendChild(item);
 
-      // --- 核心：在这里插入状态读取代码 ---
       const currentBtn = item.querySelector('.btn-send');
       const statusKey = `status_${url}`;
 
       chrome.storage.local.get([statusKey], (res) => {
         if (res[statusKey] === 'auto-recorded') {
-          currentBtn.innerText = '✅ 正在录制中';
+          currentBtn.innerHTML = '✅ 录制中';
           currentBtn.disabled = true;
-          currentBtn.style.background = '#4CAF50';
-          currentBtn.style.cursor = 'not-allowed';
         }
       });
     });
   });
 }
 
-// 提取一个公用的更新函数，避免代码重复
 function updateRequestDataUI() {
   chrome.storage.local.get(['lastReqStatus'], (localResult) => {
     const { time, result } = localResult.lastReqStatus || {};
@@ -70,85 +66,128 @@ function updateRequestDataUI() {
 
     const el = document.getElementById('lastResult');
     if (el && result) {
-      // 根据你的需求选择显示方式
-      el.innerText =
-        typeof result === 'object' ? JSON.stringify(result, null, 2) : result;
+      if (typeof result === 'object') {
+        let text = result.status === 200 ? '✅ ' : '❌ ';
+        text += '开播列表：' + (result.onlineAuthors || '无');
+        el.innerText = text;
+        // el.innerHTML = JSON.stringify(result, null, 2);
+        // el.innerText = result.status === 200 ? '✅ 成功' : '❌ 失败';
+      } else {
+        el.innerText =
+          result.length > 20 ? result.substring(0, 20) + '...' : result;
+      }
     }
   });
 }
 
-// 2. 页面首次打开时，执行一次初始化渲染
+function updateToggleUI(enabled) {
+  const toggleBtn = document.getElementById('toggleButton');
+  const toggleIcon = document.getElementById('toggleIcon');
+  const statusText = document.getElementById('statusText');
+  const statusDetail = document.getElementById('statusDetail');
+
+  if (enabled) {
+    toggleBtn.className = 'toggle-button on';
+    toggleIcon.textContent = '📹';
+    statusText.className = 'status-text on';
+    statusText.textContent = '监听中';
+    statusDetail.textContent = '正在监控直播流';
+  } else {
+    toggleBtn.className = 'toggle-button off';
+    toggleIcon.textContent = '📹';
+    statusText.className = 'status-text off';
+    statusText.textContent = '已停用';
+    statusDetail.textContent = '点击按钮启用';
+  }
+}
+
 renderList();
 updateRequestDataUI();
 
-// 3. 读取并初始化监听开关状态
 chrome.storage.sync.get('monitorEnabled', (result) => {
-  const toggle = document.getElementById('monitorToggle');
-  toggle.checked = result.monitorEnabled !== false;
-  toggle.addEventListener('change', () => {
-    const enabled = toggle.checked;
-    chrome.storage.sync.set({ monitorEnabled: enabled });
-    chrome.runtime.sendMessage({ action: 'toggle_monitor', enabled });
+  const enabled = result.monitorEnabled !== false;
+  updateToggleUI(enabled);
+
+  document.getElementById('toggleButton').addEventListener('click', () => {
+    const newEnabled = !document
+      .getElementById('toggleButton')
+      .classList.contains('on');
+    chrome.storage.sync.set({ monitorEnabled: newEnabled });
+    chrome.runtime.sendMessage({
+      action: 'toggle_monitor',
+      enabled: newEnabled,
+    });
+    updateToggleUI(newEnabled);
   });
 });
 
-// 4. 核心：监听存储变化
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== 'local') return;
 
-  // 使用策略模式或简单的逻辑分支
   if (changes.streams) {
-    console.log('Streams 更新，刷新列表');
     renderList();
   }
 
-  // 2. 检查特定 Key 是否存在
   if (changes.lastReqStatus && changes.lastReqStatus.newValue) {
     updateRequestDataUI();
   }
 });
 
-// 处理点击发送
 document.addEventListener('click', async (e) => {
-  if (e.target.classList.contains('btn-send')) {
-    const streamUrl = e.target.getAttribute('data-url');
-    const title = e.target.getAttribute('data-title');
-    const roomUrl = e.target.getAttribute('data-room-url');
+  if (
+    e.target.classList.contains('btn-send') ||
+    e.target.closest('.btn-send')
+  ) {
+    const btn = e.target.classList.contains('btn-send')
+      ? e.target
+      : e.target.closest('.btn-send');
+    const streamUrl = btn.getAttribute('data-url');
+    const title = btn.getAttribute('data-title');
+    const roomUrl = btn.getAttribute('data-room-url');
 
     const config = await getConfig();
+    let successCount = 0;
 
-    // 给每个启用的环境发送请求
     for (const env of config.environments) {
       if (!env.enabled) continue;
 
-      fetch(env.notifyApiUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          url: streamUrl,
-          title: title,
-          room_url: roomUrl,
-        }),
-      })
-        .then((res) => {
-          e.target.innerText = '✅ 已发送';
-          e.target.style.background = '#4CAF50';
-          console.log('发送成功：', res);
-        })
-        .catch((err) => alert('后端未启动或发送失败'));
+      try {
+        const res = await fetch(env.notifyApiUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            url: streamUrl,
+            title: title,
+            room_url: roomUrl,
+          }),
+        });
+
+        if (res.ok) {
+          successCount++;
+        }
+      } catch (err) {
+        console.error('发送失败：', err);
+      }
+    }
+
+    if (successCount > 0) {
+      btn.innerHTML = '✅ 已发送';
+      btn.disabled = true;
+    } else {
+      btn.innerHTML = '❌ 发送失败';
+      setTimeout(() => {
+        btn.innerHTML = '🚀 重试';
+        btn.disabled = false;
+      }, 2000);
     }
   }
 
-  // 2. 修正清空按钮逻辑：检查 e.target.id
   if (e.target.id === 'clearBtn') {
-    console.log('清空按钮被点击');
-    // 发送消息给 background.js 彻底清除数据
     chrome.runtime.sendMessage({ action: 'clear_count' }, () => {
-      // 清除 UI 上的列表
-      document.getElementById('list').innerHTML =
-        '<p style="color: #999; text-align: center;">暂无流地址</p>';
-      // 关闭弹窗（可选）
-      setTimeout(() => window.close(), 500);
+      document.getElementById('list').innerHTML = '';
+      document.getElementById('emptyState').classList.remove('hidden');
+      document.getElementById('streamCount').textContent = '0';
+      setTimeout(() => window.close(), 300);
     });
   }
 });
