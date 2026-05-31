@@ -1,10 +1,68 @@
 import { QUALITY_LABELS, getConfig } from './config.js';
 
+const REQUEST_TIMEOUT_MS = 8000;
+
 function getQualityInfo(url) {
   for (let q of QUALITY_LABELS) {
     if (url.includes(q.key)) return q;
   }
   return { label: '未知', color: '#666' };
+}
+
+async function fetchJson(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const resp = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    const text = await resp.text();
+    let data = null;
+
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch (_) {
+        data = { raw: text };
+      }
+    }
+
+    return {
+      ok: resp.ok,
+      status: resp.status,
+      data,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function isEnvironmentRecording(env, roomUrl) {
+  if (!roomUrl) return false;
+  const result = await fetchJson(
+    `${env.statusApiUrl}?url=${encodeURIComponent(roomUrl)}`
+  );
+  const data = result.data || {};
+
+  return (
+    result.ok &&
+    data.exists &&
+    (data.data?.status === 'recording' || data.data?.status === 'paused')
+  );
+}
+
+async function sendRecordingRequest(env, streamUrl, title, roomUrl) {
+  return fetchJson(env.notifyApiUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      url: streamUrl,
+      title,
+      room_url: roomUrl,
+    }),
+  });
 }
 
 function padTime(value) {
@@ -142,7 +200,7 @@ function renderList() {
 
       chrome.storage.local.get([statusKey], (res) => {
         if (res[statusKey] === 'auto-recorded') {
-          currentBtn.innerHTML = '✅ 录制中';
+          currentBtn.textContent = '✅ 录制中';
           currentBtn.disabled = true;
         }
       });
@@ -247,17 +305,19 @@ document.addEventListener('click', async (e) => {
       if (!env.enabled) continue;
 
       try {
-        const res = await fetch(env.notifyApiUrl, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            url: streamUrl,
-            title: title,
-            room_url: roomUrl,
-          }),
-        });
+        if (await isEnvironmentRecording(env, roomUrl)) {
+          successCount++;
+          continue;
+        }
 
-        if (res.ok) {
+        const result = await sendRecordingRequest(
+          env,
+          streamUrl,
+          title,
+          roomUrl
+        );
+
+        if (result.ok) {
           successCount++;
         }
       } catch (err) {
@@ -266,12 +326,12 @@ document.addEventListener('click', async (e) => {
     }
 
     if (successCount > 0) {
-      btn.innerHTML = '✅ 已发送';
+      btn.textContent = '✅ 已发送';
       btn.disabled = true;
     } else {
-      btn.innerHTML = '❌ 发送失败';
+      btn.textContent = '❌ 发送失败';
       setTimeout(() => {
-        btn.innerHTML = '🚀 重试';
+        btn.textContent = '🚀 重试';
         btn.disabled = false;
       }, 2000);
     }

@@ -5,14 +5,15 @@ import {
   getConfig,
 } from './config.js';
 
+const MAX_DETECTED_STREAMS = 100;
+const REQUEST_TIMEOUT_MS = 8000;
+
 let lastUrl = ''; // 简单防抖：防止同一地址短时间内多次弹出
 
 // 检测到的直播流，应该是一个对象，包含 url、title、roomUrl 等信息，方便后续扩展
 let detectedStreams = [];
-let autoRecordTimer = null;
-let bestUrl = '';
-let currentBestLevel = -1;
-let activeRecordingRoomUrl = null; // 当前正在录制中的直播间URL，不为空时跳过关注列表请求
+const bestStreamsByRoom = new Map();
+let activeRecordingByEnv = {};
 
 console.log('[Live Stream Sniffer]KS直播监测插件已启动');
 
@@ -27,12 +28,6 @@ function getEnabledEnvironments(config) {
 function findEnvironmentsByTitle(config, title) {
   return getEnabledEnvironments(config).filter((env) =>
     getEnvAuthors(env).some((author) => title.includes(author))
-  );
-}
-
-function findEnvironmentsByAuthorName(config, authorName) {
-  return getEnabledEnvironments(config).filter((env) =>
-    getEnvAuthors(env).includes(authorName)
   );
 }
 
@@ -54,6 +49,77 @@ function getLiveRoomUrlFromRequest(details, tab) {
   );
 }
 
+function getQualityWeight(url) {
+  for (let key in QUALITY_WEIGHTS) {
+    if (url.includes(key)) return QUALITY_WEIGHTS[key];
+  }
+  return 0;
+}
+
+function addDetectedStream(stream) {
+  detectedStreams = [...detectedStreams, stream].slice(-MAX_DETECTED_STREAMS);
+  chrome.action.setBadgeText({ text: detectedStreams.length.toString() });
+  chrome.action.setBadgeBackgroundColor({ color: '#ff5000' });
+  chrome.storage.local.set({ streams: detectedStreams });
+}
+
+function setActiveRecording(envName, roomUrl) {
+  activeRecordingByEnv[envName] = {
+    roomUrl,
+    updatedAt: Date.now(),
+  };
+  chrome.storage.local.set({ activeRecordingByEnv });
+}
+
+function clearActiveRecording(envName) {
+  if (!activeRecordingByEnv[envName]) return;
+  delete activeRecordingByEnv[envName];
+  chrome.storage.local.set({ activeRecordingByEnv });
+}
+
+async function fetchJson(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const resp = await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+    const text = await resp.text();
+    let data = null;
+
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch (_) {
+        data = { raw: text };
+      }
+    }
+
+    return {
+      ok: resp.ok,
+      status: resp.status,
+      data,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function isEnvironmentRecording(env, roomUrl) {
+  const result = await fetchJson(
+    `${env.statusApiUrl}?url=${encodeURIComponent(roomUrl)}`
+  );
+  const data = result.data || {};
+
+  return (
+    result.ok &&
+    data.exists &&
+    (data.data?.status === 'recording' || data.data?.status === 'paused')
+  );
+}
+
 async function sendToEnvironments(environments, url, title, roomUrl, caption = '') {
   let activeCount = 0;
 
@@ -63,17 +129,11 @@ async function sendToEnvironments(environments, url, title, roomUrl, caption = '
     // 先查后端状态，已在录制则跳过
     let alreadyRecording = false;
     try {
-      const resp = await fetch(
-        `${env.statusApiUrl}?url=${encodeURIComponent(roomUrl)}`
-      );
-      const data = await resp.json();
-      if (
-        data.exists &&
-        (data.data?.status === 'recording' || data.data?.status === 'paused')
-      ) {
+      if (await isEnvironmentRecording(env, roomUrl)) {
         console.log(
           `[Live Stream Sniffer][${env.name}] 已在录制中，跳过: ${roomUrl}`
         );
+        setActiveRecording(env.name, roomUrl);
         activeCount++;
         alreadyRecording = true;
       }
@@ -85,7 +145,7 @@ async function sendToEnvironments(environments, url, title, roomUrl, caption = '
 
     // 未在录制，发送录制请求
     try {
-      const res = await fetch(env.notifyApiUrl, {
+      const result = await fetchJson(env.notifyApiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -95,14 +155,17 @@ async function sendToEnvironments(environments, url, title, roomUrl, caption = '
           caption,
         }),
       });
-      if (res.ok) {
+      if (result.ok) {
+        setActiveRecording(env.name, roomUrl);
         activeCount++;
         console.log(
           `[Live Stream Sniffer][${env.name}] 录制请求成功: ${roomUrl}`
         );
       }
-      const data = await res.json();
-      console.log(`[DEBUG][${env.name}] response:`, JSON.stringify(data));
+      console.log(
+        `[DEBUG][${env.name}] response:`,
+        JSON.stringify(result.data)
+      );
     } catch (err) {
       console.warn(`[Live Stream Sniffer][${env.name}] 发送录制请求失败:`, err);
     }
@@ -111,7 +174,6 @@ async function sendToEnvironments(environments, url, title, roomUrl, caption = '
   if (activeCount > 0) {
     chrome.action.setBadgeText({ text: 'HIGH' });
     chrome.storage.local.set({ [`status_${url}`]: 'auto-recorded' });
-    activeRecordingRoomUrl = roomUrl;
   }
 }
 
@@ -132,30 +194,36 @@ async function sendToBackend(url, title, roomUrl, caption = '') {
 function autoChooseBest(details, targetEnvs, roomUrl, title) {
   if (!isKuaishouLiveRoomUrl(roomUrl)) return;
 
-  // --- 核心：清晰度判定 ---
-  let weight = 0;
-  for (let key in QUALITY_WEIGHTS) {
-    if (details.url.includes(key)) {
-      weight = QUALITY_WEIGHTS[key];
-      break;
-    }
-  }
+  const key = roomUrl;
+  const weight = getQualityWeight(details.url);
+  const state = bestStreamsByRoom.get(key) || {
+    timer: null,
+    bestUrl: '',
+    currentBestLevel: -1,
+    title,
+    targetEnvs,
+  };
+
+  state.title = title;
+  state.targetEnvs = targetEnvs;
 
   // 如果这个流比刚才抓到的更清晰，则更新
-  if (weight > currentBestLevel) {
-    currentBestLevel = weight;
-    bestUrl = details.url;
+  if (weight > state.currentBestLevel) {
+    state.currentBestLevel = weight;
+    state.bestUrl = details.url;
     console.log(`🚀 发现更优画质 (${weight}):`, details.url);
   }
 
   // --- 延迟 2 秒发送，等待所有潜在的清晰度流都冒出来 ---
-  if (autoRecordTimer) clearTimeout(autoRecordTimer);
-  autoRecordTimer = setTimeout(() => {
-    sendToEnvironments(targetEnvs, bestUrl, title, roomUrl);
-    // 重置状态，准备下一次可能的切换（比如主播断流重开）
-    currentBestLevel = -1;
-    bestUrl = '';
+  if (state.timer) clearTimeout(state.timer);
+  state.timer = setTimeout(() => {
+    if (state.bestUrl) {
+      sendToEnvironments(state.targetEnvs, state.bestUrl, state.title, roomUrl);
+    }
+    bestStreamsByRoom.delete(key);
   }, 2000);
+
+  bestStreamsByRoom.set(key, state);
 }
 
 // 标记是否访问过快手页面（前置条件：有 cookie 才能调 API）
@@ -225,7 +293,7 @@ chrome.webRequest.onBeforeRequest.addListener(
         roomUrl,
         capturedAt: Date.now(),
       };
-      detectedStreams.push(detectedInfo);
+      addDetectedStream(detectedInfo);
       console.log(
         '✅ 捕获到直播流地址:',
         details.url,
@@ -234,15 +302,6 @@ chrome.webRequest.onBeforeRequest.addListener(
         '标题:',
         title
       );
-      // detectedStreams.push(details.url);
-
-      // 更新图标上的数字
-      chrome.action.setBadgeText({ text: detectedStreams.length.toString() });
-      chrome.action.setBadgeBackgroundColor({ color: '#ff5000' }); // 快手橙
-
-      // 存入本地存储，方便 Popup 读取
-      chrome.storage.local.set({ streams: detectedStreams });
-
       // 2. 获取该标签页的信息
       const tabId = details.tabId;
       chrome.tabs.get(tabId, (tab) => {
@@ -319,15 +378,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     lastUrl = url;
 
     console.log('✅ [content] 捕获到直播流地址:', url);
-    detectedStreams.push({
+    addDetectedStream({
       url,
       title: tab.title,
       roomUrl: tab.url,
       capturedAt: Date.now(),
     });
-    chrome.action.setBadgeText({ text: detectedStreams.length.toString() });
-    chrome.action.setBadgeBackgroundColor({ color: '#ff5000' });
-    chrome.storage.local.set({ streams: detectedStreams });
 
     // 按环境匹配关注列表中的主播
     getConfig().then((config) => {
@@ -350,12 +406,28 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
 const notifiedRooms = new Set();
 
-// 在 SW 重启时，从本地存储恢复已通知记录
-chrome.storage.local.get('notifiedRooms', (result) => {
-  if (result && result.notifiedRooms) {
-    for (const id of result.notifiedRooms) notifiedRooms.add(id);
+// 在 SW 重启时，从本地存储恢复关键运行状态
+chrome.storage.local.get(
+  ['notifiedRooms', 'streams', 'activeRecordingByEnv'],
+  (result) => {
+    if (result?.notifiedRooms) {
+      for (const id of result.notifiedRooms) notifiedRooms.add(id);
+    }
+    if (Array.isArray(result?.streams)) {
+      detectedStreams = result.streams.slice(-MAX_DETECTED_STREAMS);
+      if (result.streams.length !== detectedStreams.length) {
+        chrome.storage.local.set({ streams: detectedStreams });
+      }
+      if (detectedStreams.length) {
+        chrome.action.setBadgeText({ text: detectedStreams.length.toString() });
+        chrome.action.setBadgeBackgroundColor({ color: '#ff5000' });
+      }
+    }
+    if (result?.activeRecordingByEnv) {
+      activeRecordingByEnv = result.activeRecordingByEnv;
+    }
   }
-});
+);
 
 function pickBestQuality(representations) {
   let best = null;
@@ -454,7 +526,7 @@ function setFollowReqStatus(statusResult) {
  * 如果检测到关注的主播开播，会触发相应的录制处理逻辑。
  *
  * 优化策略：
- * - 如果已有正在录制的直播间，先检查后端录制状态，避免频繁请求快手接口
+ * - 如果某个环境已有正在录制的直播间，先检查该环境后端录制状态
  * - 添加随机延迟防止被风控
  * - 仅在访问过快手页面且配置了关注主播时才执行查询
  *
@@ -465,8 +537,8 @@ function setFollowReqStatus(statusResult) {
  * @description
  * 执行流程：
  * 1. 检查监控是否启用，未启用则直接返回
- * 2. 如果有正在录制的直播间，检查后端录制状态
- *    - 如果仍在录制中（recording或paused状态），跳过本次查询
+ * 2. 如果环境有正在录制的直播间，检查后端录制状态
+ *    - 如果仍在录制中（recording或paused状态），该环境跳过本次匹配
  *    - 如果不在录制中，清除录制标记，继续正常查询
  * 3. 检查是否访问过快手页面，未访问则返回
  * 4. 获取已启用环境的关注主播列表，为空则返回
@@ -479,43 +551,43 @@ async function checkFollowingLivings() {
     const { monitorEnabled } = await chrome.storage.sync.get('monitorEnabled');
     if (monitorEnabled === false) return;
 
-    // 如果已有正在录制的直播间，先查后端状态，无需每次都请求快手接口
-    if (activeRecordingRoomUrl) {
-      const config = await getConfig();
-      let anyRecording = false;
-      for (const env of config.environments) {
-        if (!env.enabled) continue;
-        try {
-          const resp = await fetch(
-            `${env.statusApiUrl}?url=${encodeURIComponent(activeRecordingRoomUrl)}`
-          );
-          const data = await resp.json();
-          if (
-            data.exists &&
-            (data.data?.status === 'recording' ||
-              data.data?.status === 'paused')
-          ) {
-            anyRecording = true;
-            break;
-          }
-        } catch (_) {}
-      }
-      if (anyRecording) {
-        console.log('[Live Stream Sniffer] 仍在录制中，跳过关注列表查询');
-        return;
-      }
-      // 不在录制中了，清除标记，下次正常查询关注列表
-      activeRecordingRoomUrl = null;
-    }
-
     const { kuaishouVisited } =
       await chrome.storage.local.get('kuaishouVisited');
     if (!kuaishouVisited) return;
 
     const config = await getConfig();
     const enabledEnvs = getEnabledEnvironments(config);
+    const queryEnvs = [];
+
+    for (const env of enabledEnvs) {
+      const active = activeRecordingByEnv[env.name];
+      if (!active?.roomUrl) {
+        queryEnvs.push(env);
+        continue;
+      }
+
+      try {
+        if (await isEnvironmentRecording(env, active.roomUrl)) {
+          console.log(
+            `[Live Stream Sniffer][${env.name}] 仍在录制中，跳过该环境关注列表匹配`
+          );
+          continue;
+        }
+      } catch (err) {
+        console.warn(`[Live Stream Sniffer][${env.name}] 录制状态查询失败:`, err);
+      }
+
+      clearActiveRecording(env.name);
+      queryEnvs.push(env);
+    }
+
+    if (!queryEnvs.length) {
+      console.log('[Live Stream Sniffer] 所有启用环境仍在录制中，跳过关注列表查询');
+      return;
+    }
+
     const authors = new Set(
-      enabledEnvs.flatMap((env) => getEnvAuthors(env))
+      queryEnvs.flatMap((env) => getEnvAuthors(env))
     );
     if (!authors.size) return;
 
@@ -523,14 +595,16 @@ async function checkFollowingLivings() {
     await randomDelay(2000, 6000);
 
     console.log('[Live Stream Sniffer] 查询关注列表，检测开播中...');
-    const resp = await fetch(LIVING_API_URL, { credentials: 'include' });
+    const result = await fetchJson(LIVING_API_URL, {
+      credentials: 'include',
+    });
 
-    if (!resp.ok) {
-      console.warn(`[Live Stream Sniffer] 查询关注列表失败: ${resp.status}`);
-      setFollowReqStatus({ status: resp.status, message: '请求失败' });
+    if (!result.ok) {
+      console.warn(`[Live Stream Sniffer] 查询关注列表失败: ${result.status}`);
+      setFollowReqStatus({ status: result.status, message: '请求失败' });
       return;
     }
-    const data = await resp.json();
+    const data = result.data || {};
     const list = data?.data?.list || [];
 
     const onlineAuthors = [];
@@ -538,7 +612,9 @@ async function checkFollowingLivings() {
       const author = item?.author;
       if (!author) continue;
       if (authors.has(author.name)) {
-        const targetEnvs = findEnvironmentsByAuthorName(config, author.name);
+        const targetEnvs = queryEnvs.filter((env) =>
+          getEnvAuthors(env).includes(author.name)
+        );
         if (!targetEnvs.length) continue;
         console.log(
           `🎯 检测到关注的主播开播: ${author.name}，匹配环境: ${targetEnvs

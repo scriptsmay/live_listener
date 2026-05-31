@@ -1,6 +1,7 @@
 // config.js
 
 export const FOLLOWED_AUTHORS = ['KSG无言'];
+export const CONFIG_VERSION = 2;
 
 export const NOTIFY_API_PATH = '/api/notify/live_download';
 export const STATUS_API_PATH = '/api/notify/status';
@@ -100,6 +101,7 @@ export async function getConfig() {
     };
   });
   return {
+    configVersion: CONFIG_VERSION,
     environments,
     // 兼容旧调用方，新代码应使用 environments[*].followedAuthors。
     followedAuthors: legacyAuthors ?? FOLLOWED_AUTHORS,
