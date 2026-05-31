@@ -39,6 +39,7 @@
       name: 'production',
       label: '生产环境',
       enabled: true,
+      baseUrl: 'http://localhost:1123',
       notifyApiUrl: 'http://localhost:1123/api/notify/live_download',
       statusApiUrl: 'http://localhost:1123/api/notify/status'
     }
@@ -56,6 +57,7 @@
       name: 'production',
       label: '生产环境',
       enabled: true,
+      baseUrl: 'http://localhost:1123',
       notifyApiUrl: 'http://localhost:1123/api/notify/live_download',
       statusApiUrl: 'http://localhost:1123/api/notify/status',
       followedAuthors: ['KSG无言']
@@ -64,6 +66,7 @@
       name: 'development',
       label: '开发环境',
       enabled: false,
+      baseUrl: 'http://localhost:3001',
       notifyApiUrl: 'http://localhost:3001/api/notify/live_download',
       statusApiUrl: 'http://localhost:3001/api/notify/status',
       followedAuthors: []
@@ -81,6 +84,8 @@
 ```js
 followedAuthors: ['KSG无言']
 ```
+
+环境配置只需要填写 `baseUrl`，录制和状态接口后缀由代码统一拼接。
 
 `getConfig()` 合并配置时按以下优先级处理：
 
@@ -102,9 +107,13 @@ followedAuthors: ['KSG无言']
 
 ## Options 页面改造
 
-每个环境卡片内已新增 textarea：
+每个环境卡片内已新增 `baseUrl` 和 textarea：
 
 ```html
+<div class="env-field">
+  <label>服务地址（Base URL）</label>
+  <input type="text" class="env-base-url" />
+</div>
 <div class="env-field">
   <label>关注的主播（每行一个）</label>
   <textarea class="env-followed-authors" rows="5" placeholder="KSG无言"></textarea>
@@ -113,18 +122,15 @@ followedAuthors: ['KSG无言']
 
 `options.js` 的处理逻辑已实现：
 
-1. `renderEnvCard(env)` 渲染环境级主播列表。
-2. `getEnvData(env, card)` 读取该卡片内的 textarea，并转成数组：
+1. `renderEnvCard(env)` 渲染环境的 `baseUrl` 和主播列表。
+2. `getEnvData(env, card)` 读取该卡片内的 `baseUrl` 和 textarea：
 
 ```js
-const followedAuthors = card
-  .querySelector('.env-followed-authors')
-  .value.split('\n')
-  .map((s) => s.trim())
-  .filter(Boolean);
+const baseUrl = card.querySelector('.env-base-url').value.trim();
+const followedAuthors = card.querySelector('.env-followed-authors').value.split('\n');
 ```
 
-3. 保存时只写入 `environments`。
+3. 保存时只写入 `environments`，由 `config.js` 统一补全 notify/status 接口。
 4. 旧全局 `followedAuthors` 不主动删除，由 `getConfig()` 做读取兼容，避免破坏历史数据。
 
 ## 后台推送流程改造

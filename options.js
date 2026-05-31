@@ -11,12 +11,8 @@ function renderEnvCard(env) {
       </label>
     </div>
     <div class="env-field">
-      <label>录制接口</label>
-      <input type="text" class="env-notify-url" value="${env.notifyApiUrl}">
-    </div>
-    <div class="env-field">
-      <label>状态查询接口</label>
-      <input type="text" class="env-status-url" value="${env.statusApiUrl}">
+      <label>服务地址（Base URL）</label>
+      <input type="text" class="env-base-url" value="${env.baseUrl}">
     </div>
     <div class="env-field">
       <label>关注的主播（每行一个）</label>
@@ -41,8 +37,7 @@ function getEnvData(env, card) {
     name: env.name,
     label: env.label,
     enabled: card.querySelector('.env-enabled').checked,
-    notifyApiUrl: card.querySelector('.env-notify-url').value,
-    statusApiUrl: card.querySelector('.env-status-url').value,
+    baseUrl: card.querySelector('.env-base-url').value.trim().replace(/\/$/, ''),
     followedAuthors: parseAuthors(
       card.querySelector('.env-followed-authors').value
     ),
@@ -61,7 +56,14 @@ async function loadSettings() {
   }
 }
 
-document.getElementById('save').addEventListener('click', () => {
+const saveButton = document.getElementById('save');
+
+function resetButton() {
+  saveButton.innerText = '保存';
+  saveButton.disabled = false;
+}
+
+saveButton.addEventListener('click', () => {
   const environments = [];
   const container = document.getElementById('envContainer');
   for (let i = 0; i < container.children.length; i++) {
@@ -72,7 +74,10 @@ document.getElementById('save').addEventListener('click', () => {
 
   chrome.storage.sync.set({ environments }, () => {
     chrome.runtime.sendMessage({ action: 'recheck_following' });
-    alert('配置已更新，已开始重新检测');
+    // alert('配置已更新，已开始重新检测');
+    saveButton.innerText = '保存成功';
+    saveButton.disabled = true;
+    setTimeout(resetButton, 2000);
   });
 });
 

@@ -16,11 +16,11 @@
 
 ### 高优先级
 
-1. 开发环境接口缺少 host permission
+1. 自定义 `baseUrl` 受 manifest 限制
 
-`config.js` 默认开发环境使用 `http://localhost:3001/*`，但 `manifest.json` 只声明了 `http://localhost:1123/*`。在启用开发环境时，扩展页和 Service Worker 对 `:3001` 的跨域请求可能失败。
+`manifest.json` 已补齐默认的 `http://localhost:1123/*` 和 `http://localhost:3001/*`，但如果以后在 options 里填写其他端口或域名，扩展仍会因为 host permission 不匹配而失败。
 
-建议：在 `manifest.json` 增加 `http://localhost:3001/*`，或统一约束环境配置只能使用已声明权限内的地址。
+建议：要么把环境范围限定在预设 host 上，要么把 host 权限设计成更明确的可配置白名单。
 
 2. `activeRecordingRoomUrl` 是全局单值
 
@@ -125,4 +125,3 @@ Service Worker 重启后，`detectedStreams`、`activeRecordingRoomUrl`、清晰
 1. 修复 `manifest.json` 的 `localhost:3001` 权限缺口。
 2. 把 `activeRecordingRoomUrl` 和清晰度 debounce 改成按环境/房间/标签页隔离。
 3. 移除 Popup 和 Options 中对外部数据的 `innerHTML` 拼接。
-

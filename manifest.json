@@ -6,7 +6,8 @@
   "host_permissions": [
     "*://*.kuaishou.com/*",
     "*://*.yximgs.com/*",
-    "http://localhost:1123/*"
+    "http://localhost:1123/*",
+    "http://localhost:3001/*"
   ],
   "background": {
     "service_worker": "background.js",

@@ -7,7 +7,7 @@
         --primary: #ff8c00;
         --primary-light: #ffa500;
         --primary-dark: #e67e00;
-        --success: #4CAF50;
+        --success: #4caf50;
         --bg-1: #fffaf5;
         --bg-2: #fff3e6;
         --gray-50: #f9fafb;
@@ -29,7 +29,9 @@
       body {
         width: 680px;
         min-height: 480px;
-        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+        font-family:
+          -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
+          'Helvetica Neue', Arial, sans-serif;
         background: linear-gradient(135deg, var(--bg-1) 0%, var(--bg-2) 100%);
         padding: 0;
         margin: 0;
@@ -163,7 +165,11 @@
       }
 
       .btn-send {
-        background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+        background: linear-gradient(
+          90deg,
+          var(--primary) 0%,
+          var(--primary-dark) 100%
+        );
         color: white;
         border: none;
         width: 100%;
@@ -253,12 +259,20 @@
       }
 
       .toggle-button.off {
-        background: linear-gradient(135deg, var(--gray-100) 0%, var(--gray-200) 100%);
+        background: linear-gradient(
+          135deg,
+          var(--gray-100) 0%,
+          var(--gray-200) 100%
+        );
         color: var(--gray-600);
       }
 
       .toggle-button.on {
-        background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
+        background: linear-gradient(
+          135deg,
+          var(--primary) 0%,
+          var(--primary-dark) 100%
+        );
         color: white;
         animation: pulse-ring 2s infinite;
       }
@@ -362,8 +376,12 @@
 
       <div class="right-panel">
         <div class="status-card">
-          <div class="status-title">🎙️ 后台监听</div>
-          <button class="toggle-button off" id="toggleButton" title="点击切换状态">
+          <div class="status-title">后台监听关注列表</div>
+          <button
+            class="toggle-button off"
+            id="toggleButton"
+            title="点击切换状态"
+          >
             <span id="toggleIcon">📹</span>
           </button>
           <div class="status-text off" id="statusText">已停用</div>

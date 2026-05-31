@@ -2,24 +2,32 @@
 
 export const FOLLOWED_AUTHORS = ['KSG无言'];
 
+export const NOTIFY_API_PATH = '/api/notify/live_download';
+export const STATUS_API_PATH = '/api/notify/status';
+
+function buildEnvironment(baseUrl, overrides = {}) {
+  return {
+    baseUrl,
+    notifyApiUrl: `${baseUrl}${NOTIFY_API_PATH}`,
+    statusApiUrl: `${baseUrl}${STATUS_API_PATH}`,
+    ...overrides,
+  };
+}
+
 // 每个环境一个配置块，可在 options 页面独立开关
 export const DEFAULT_ENVIRONMENTS = [
-  {
+  buildEnvironment('http://localhost:1123', {
     name: 'production',
     label: '生产环境',
     enabled: true,
-    notifyApiUrl: 'http://localhost:1123/api/notify/live_download',
-    statusApiUrl: 'http://localhost:1123/api/notify/status',
     followedAuthors: FOLLOWED_AUTHORS,
-  },
-  {
+  }),
+  buildEnvironment('http://localhost:3001', {
     name: 'development',
     label: '开发环境',
     enabled: false,
-    notifyApiUrl: 'http://localhost:3001/api/notify/live_download',
-    statusApiUrl: 'http://localhost:3001/api/notify/status',
     followedAuthors: [],
-  },
+  }),
 ];
 
 // 定义关键词对应的显示文字和颜色
@@ -50,6 +58,16 @@ function normalizeAuthors(authors) {
     : null;
 }
 
+function normalizeBaseUrl(baseUrl) {
+  return typeof baseUrl === 'string' ? baseUrl.replace(/\/$/, '') : '';
+}
+
+function inferBaseUrlFromUrl(url) {
+  if (typeof url !== 'string') return '';
+  const match = url.match(/^(https?:\/\/[^/]+)/);
+  return match ? match[1] : '';
+}
+
 export async function getConfig() {
   const storage = await chrome.storage.sync.get(null);
   const storedEnvs = storage.environments || [];
@@ -58,11 +76,17 @@ export async function getConfig() {
     const stored = storedEnvs.find((e) => e.name === def.name);
     const storedAuthors = normalizeAuthors(stored?.followedAuthors);
     const defaultAuthors = normalizeAuthors(def.followedAuthors) || [];
+    const storedBaseUrl =
+      normalizeBaseUrl(stored?.baseUrl) ||
+      inferBaseUrlFromUrl(stored?.notifyApiUrl) ||
+      inferBaseUrlFromUrl(stored?.statusApiUrl);
+    const baseUrl = storedBaseUrl || def.baseUrl;
     return {
       ...def,
+      baseUrl,
       enabled: stored?.enabled ?? def.enabled,
-      notifyApiUrl: stored?.notifyApiUrl || def.notifyApiUrl,
-      statusApiUrl: stored?.statusApiUrl || def.statusApiUrl,
+      notifyApiUrl: `${baseUrl}${NOTIFY_API_PATH}`,
+      statusApiUrl: `${baseUrl}${STATUS_API_PATH}`,
       followedAuthors: storedAuthors ?? legacyAuthors ?? defaultAuthors,
     };
   });
