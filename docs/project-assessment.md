@@ -17,12 +17,12 @@
 已处理：
 
 1. Options 只允许保存 manifest 已声明的默认 `baseUrl`，避免配置成扩展无权限访问的地址。
-2. `activeRecordingRoomUrl` 已改为 `activeRecordingByEnv`，按环境记录正在录制的直播间。
+2. `activeRecordingRoomUrl` 保持全局单值，并持久化到 storage；这是有意的风控策略。
 3. 清晰度选择 debounce 已改为按直播间隔离，避免多个直播间互相覆盖最佳流。
 4. Popup 直播流卡片和 Options 环境卡片已改为 DOM API 渲染，不再把外部标题、URL、配置值直接拼进 `innerHTML`。
 5. 后端请求已增加超时和 JSON 容错，关注列表请求也复用统一请求封装。
 6. Popup 手动推送会先查后端状态，避免重复发送已在录制的直播间。
-7. Service Worker 启动时恢复 `streams`、`notifiedRooms` 和 `activeRecordingByEnv`。
+7. Service Worker 启动时恢复 `streams`、`notifiedRooms` 和 `activeRecordingRoomUrl`。
 8. `detectedStreams` 已限制最多保留 100 条。
 9. storage 已增加 `configVersion` 写入。
 10. README 已补充安装、配置、接口和手动验证说明。
@@ -45,9 +45,9 @@
 
 2. `activeRecordingRoomUrl` 是全局单值
 
-已修复。当前按环境记录正在录制的直播间，一个环境录制中不会阻塞其他环境继续查询关注列表。
+这是有意设计。当前只监控指定主播，且直播平台关注列表 API 风控严格；只要任一启用环境确认该主播仍在录制，就跳过整次关注列表查询，减少平台 API 请求。
 
-后续可继续升级为同一环境支持多个并发直播间。
+后续如果扩展到多主播并发录制，再重新评估是否需要按主播或环境拆分。
 
 3. 清晰度选择 debounce 是全局状态
 
@@ -65,7 +65,7 @@
 
 1. 状态持久化仍可继续完善
 
-已恢复 `detectedStreams`、`notifiedRooms` 和 `activeRecordingByEnv`。清晰度 debounce 状态仍只保存在内存中，因为它是 2 秒内的临时选择状态。
+已恢复 `detectedStreams`、`notifiedRooms` 和 `activeRecordingRoomUrl`。清晰度 debounce 状态仍只保存在内存中，因为它是 2 秒内的临时选择状态。
 
 建议：继续保持只持久化长期状态，临时状态不要写入 storage。
 
@@ -119,7 +119,7 @@
 
 1. 已补齐 `manifest.json` 中开发环境端口权限。
 2. 已封装后端请求，加入超时、JSON 容错和统一状态返回。
-3. 已将 `activeRecordingRoomUrl` 改为按环境记录。
+3. 已持久化 `activeRecordingRoomUrl`，并保留全局单直播间暂停轮询策略。
 4. 已将清晰度选择状态改为按 `roomUrl` 隔离。
 
 ### 第二阶段：收敛数据模型
