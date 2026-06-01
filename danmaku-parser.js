@@ -11,7 +11,13 @@
 export function normalizeDanmakuEvent(rawEvent, sessionStartMs = 0) {
   if (!rawEvent || typeof rawEvent !== 'object') return null;
 
-  const tsAbs = rawEvent.ts_ms || Date.now();
+  // 显式校验时间戳，避免 ts_ms=0 被 || 误判为 falsy
+  let tsAbs;
+  if (typeof rawEvent.ts_ms === 'number' && rawEvent.ts_ms > 0) {
+    tsAbs = rawEvent.ts_ms;
+  } else {
+    tsAbs = Date.now();
+  }
   const tsRelative = sessionStartMs > 0 ? Math.max(0, tsAbs - sessionStartMs) : tsAbs;
 
   const base = {
