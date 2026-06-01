@@ -3,7 +3,12 @@ import {
   LIVING_API_URL,
   POLL_INTERVAL_MINUTES,
   getConfig,
+  DANMAKU_BATCH_API_PATH,
 } from './config.js';
+import {
+  normalizeDanmakuBatch,
+  filterDanmakuEvents,
+} from './danmaku-parser.js';
 
 const MAX_DETECTED_STREAMS = 100;
 const REQUEST_TIMEOUT_MS = 8000;
@@ -14,6 +19,94 @@ let lastUrl = ''; // 简单防抖：防止同一地址短时间内多次弹出
 let detectedStreams = [];
 const bestStreamsByRoom = new Map();
 let activeRecordingRoomUrl = null;
+
+// ========== 弹幕采集状态 ==========
+const danmakuSessions = new Map(); // roomUrl -> { sessionStartMs, eventCount, tabId, url, title }
+const danmakuBatchBuffer = new Map(); // roomUrl -> events[]
+const DANMAKU_BATCH_FLUSH_MS = 5000; // 5秒刷新一次
+
+/**
+ * 启动弹幕会话
+ */
+function startDanmakuSession(roomUrl, sessionStartMs, tabId, url, title) {
+  danmakuSessions.set(roomUrl, {
+    sessionStartMs,
+    tabId,
+    url,
+    title,
+    eventCount: 0,
+    startedAt: Date.now(),
+  });
+  danmakuBatchBuffer.set(roomUrl, []);
+  console.log(`[Danmaku] 采集会话开始: ${roomUrl}`);
+}
+
+/**
+ * 停止弹幕会话
+ */
+function stopDanmakuSession(roomUrl) {
+  const session = danmakuSessions.get(roomUrl);
+  if (session) {
+    console.log(`[Danmaku] 采集会话结束: ${roomUrl}, 共 ${session.eventCount} 条事件`);
+  }
+  // 刷新剩余缓冲
+  flushDanmakuBatch(roomUrl).catch(() => {});
+  danmakuSessions.delete(roomUrl);
+  danmakuBatchBuffer.delete(roomUrl);
+}
+
+/**
+ * 刷新指定房间的弹幕缓冲到后端
+ */
+async function flushDanmakuBatch(roomUrl) {
+  const buffer = danmakuBatchBuffer.get(roomUrl);
+  const session = danmakuSessions.get(roomUrl);
+  if (!buffer || buffer.length === 0 || !session) return;
+
+  const events = buffer.splice(0);
+  session.eventCount += events.length;
+
+  // 标准化事件
+  const normalized = normalizeDanmakuBatch(events, session.sessionStartMs);
+
+  // 过滤（暂不支持屏蔽词，后续可扩展）
+  const filtered = filterDanmakuEvents(normalized, { includeLikes: false });
+
+  if (filtered.length === 0) return;
+
+  // 发送到所有启用环境的后端
+  try {
+    const config = await getConfig();
+    for (const env of config.environments) {
+      if (!env.enabled) continue;
+      try {
+        await fetchJson(env.danmakuBatchApiUrl || `${env.baseUrl}${DANMAKU_BATCH_API_PATH}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            room_url: roomUrl,
+            events: filtered,
+            session_start_ms: session.sessionStartMs,
+            title: session.title || '',
+          }),
+        });
+      } catch (err) {
+        console.warn(`[Danmaku] 批量发送到 ${env.name} 失败:`, err.message);
+      }
+    }
+  } catch (err) {
+    console.warn('[Danmaku] 批量发送失败:', err.message);
+  }
+}
+
+/**
+ * 定时刷新所有弹幕缓冲
+ */
+setInterval(() => {
+  for (const roomUrl of danmakuBatchBuffer.keys()) {
+    flushDanmakuBatch(roomUrl).catch(() => {});
+  }
+}, DANMAKU_BATCH_FLUSH_MS);
 
 console.log('[Live Stream Sniffer]KS直播监测插件已启动');
 
@@ -395,6 +488,57 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       }
     });
     return true;
+  }
+
+  // ========== 弹幕采集消息处理 ==========
+
+  // 弹幕拦截脚本就绪通知
+  if (request.Message === 'danmakuReady') {
+    const tab = sender.tab;
+    const roomUrl = tab?.url || '';
+    if (!isKuaishouLiveRoomUrl(roomUrl)) return;
+
+    startDanmakuSession(
+      roomUrl,
+      request.sessionStartMs || Date.now(),
+      tab.id,
+      request.url || roomUrl,
+      request.title || tab.title || ''
+    );
+    return;
+  }
+
+  // 弹幕批量事件
+  if (request.Message === 'danmakuBatch') {
+    const tab = sender.tab;
+    const roomUrl = tab?.url || '';
+    if (!isKuaishouLiveRoomUrl(roomUrl)) return;
+
+    // 如果会话不存在，自动创建
+    if (!danmakuSessions.has(roomUrl)) {
+      startDanmakuSession(
+        roomUrl,
+        request.sessionStartMs || Date.now(),
+        tab.id,
+        roomUrl,
+        tab.title || ''
+      );
+    }
+
+    const buffer = danmakuBatchBuffer.get(roomUrl);
+    if (buffer && Array.isArray(request.events)) {
+      buffer.push(...request.events);
+    }
+    return;
+  }
+
+  // 弹幕采集停止
+  if (request.Message === 'danmakuStop') {
+    const roomUrl = request.url || sender.tab?.url || '';
+    if (roomUrl) {
+      stopDanmakuSession(roomUrl);
+    }
+    return;
   }
 });
 

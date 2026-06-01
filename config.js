@@ -5,12 +5,14 @@ export const CONFIG_VERSION = 2;
 
 export const NOTIFY_API_PATH = '/api/notify/live_download';
 export const STATUS_API_PATH = '/api/notify/status';
+export const DANMAKU_BATCH_API_PATH = '/api/danmaku/batch';
 
 function buildEnvironment(baseUrl, overrides = {}) {
   return {
     baseUrl,
     notifyApiUrl: `${baseUrl}${NOTIFY_API_PATH}`,
     statusApiUrl: `${baseUrl}${STATUS_API_PATH}`,
+    danmakuBatchApiUrl: `${baseUrl}${DANMAKU_BATCH_API_PATH}`,
     ...overrides,
   };
 }
@@ -97,6 +99,7 @@ export async function getConfig() {
       enabled: stored?.enabled ?? def.enabled,
       notifyApiUrl: `${baseUrl}${NOTIFY_API_PATH}`,
       statusApiUrl: `${baseUrl}${STATUS_API_PATH}`,
+      danmakuBatchApiUrl: `${baseUrl}${DANMAKU_BATCH_API_PATH}`,
       followedAuthors: storedAuthors ?? legacyAuthors ?? defaultAuthors,
     };
   });
