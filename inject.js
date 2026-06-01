@@ -272,7 +272,7 @@
 
   /**
    * 解析 FeedPush payload
-   * 已知结构: { f8: giftFeeds(repeated msg), f9: commentFeeds(repeated msg), ... }
+   * 已知结构: { f5: commentFeeds(repeated msg), f8: giftFeeds(repeated msg), ... }
    */
   function parsePbFeedPush(payload) {
     const events = [];
