@@ -21,12 +21,15 @@ const bestStreamsByRoom = new Map();
 let activeRecordingRoomUrl = null;
 
 // ========== 弹幕采集状态 ==========
-const danmakuSessions = new Map(); // roomUrl -> { sessionStartMs, eventCount, tabId, url, title }
+const danmakuSessions = new Map(); // roomUrl -> { sessionStartMs, eventCount, tabId, url, title, isSending, lastRecordingCheckAt }
 const danmakuBatchBuffer = new Map(); // roomUrl -> events[]
 const DANMAKU_BATCH_FLUSH_MS = 5000; // 5秒刷新一次
+const RECORDING_CHECK_INTERVAL_MS = 10000; // 10秒检查一次录制状态
+const DANMAKU_MAX_BUFFER_SIZE = 5000; // 缓冲区最大事件数（防止内存泄漏）
 
 /**
- * 启动弹幕会话
+ * 启动弹幕会话（仅创建缓冲，不立即发送）
+ * isSending 标记是否正在向后端发送弹幕（需录制中才开启）
  */
 function startDanmakuSession(roomUrl, sessionStartMs, tabId, url, title) {
   danmakuSessions.set(roomUrl, {
@@ -36,32 +39,93 @@ function startDanmakuSession(roomUrl, sessionStartMs, tabId, url, title) {
     title,
     eventCount: 0,
     startedAt: Date.now(),
+    isSending: false,
+    stopping: false,
+    lastRecordingCheckAt: 0,
   });
   danmakuBatchBuffer.set(roomUrl, []);
-  console.log(`[Danmaku] 采集会话开始: ${roomUrl}`);
+  console.log(`[Danmaku] 采集会话已创建（等待录制）: ${roomUrl}`);
 }
 
 /**
- * 停止弹幕会话
+ * 停止弹幕会话（先 drain 缓冲再 flush，最后清理）
+ * @param {string} roomUrl - 直播间 URL
+ * @param {boolean} forceFlush - 强制刷新剩余缓冲（录制结束时使用）
  */
-function stopDanmakuSession(roomUrl) {
+async function stopDanmakuSession(roomUrl, forceFlush = false) {
   const session = danmakuSessions.get(roomUrl);
   if (session) {
     console.log(`[Danmaku] 采集会话结束: ${roomUrl}, 共 ${session.eventCount} 条事件`);
+    // 1. 标记停止，阻止后续事件进入缓冲
+    session.stopping = true;
+
+    // 2. 同步取出缓冲区内容（防止 drain 期间新事件丢失）
+    const buffer = danmakuBatchBuffer.get(roomUrl);
+    const remaining = buffer ? buffer.splice(0) : [];
+    session.eventCount += remaining.length;
+
+    // 3. 如需刷新，先恢复事件到缓冲区再 await flush
+    if (forceFlush && session.isSending && remaining.length > 0) {
+      buffer.push(...remaining);
+      await flushDanmakuBatch(roomUrl).catch(() => {});
+    }
+
+    // 4. 从 Map 中移除
+    danmakuSessions.delete(roomUrl);
+    danmakuBatchBuffer.delete(roomUrl);
+  } else {
+    danmakuSessions.delete(roomUrl);
+    danmakuBatchBuffer.delete(roomUrl);
   }
-  // 刷新剩余缓冲
-  flushDanmakuBatch(roomUrl).catch(() => {});
-  danmakuSessions.delete(roomUrl);
-  danmakuBatchBuffer.delete(roomUrl);
+}
+
+/**
+ * 检查指定房间的录制状态，并自动启停弹幕发送
+ * @returns {Promise<boolean>} 当前是否正在发送
+ */
+async function checkRecordingAndUpdateSession(roomUrl) {
+  const session = danmakuSessions.get(roomUrl);
+  if (!session) return false;
+
+  session.lastRecordingCheckAt = Date.now();
+
+  const config = await getConfig();
+  let isRecording = false;
+  for (const env of config.environments) {
+    if (!env.enabled) continue;
+    try {
+      if (await isEnvironmentRecording(env, roomUrl)) {
+        isRecording = true;
+        break;
+      }
+    } catch (_) {}
+  }
+
+  if (isRecording && !session.isSending) {
+    // 录制开始 → 开启发送
+    session.isSending = true;
+    console.log(`[Danmaku] 录制中，开始发送弹幕: ${roomUrl}`);
+  } else if (!isRecording && session.isSending) {
+    // 录制结束 → 先刷新剩余缓冲，再关闭发送
+    console.log(`[Danmaku] 录制已结束，停止发送弹幕: ${roomUrl}`);
+    await flushDanmakuBatch(roomUrl).catch(() => {});
+    session.isSending = false;
+  }
+
+  // 网络 await 期间会话可能已被 stop，重新检查
+  if (!danmakuSessions.has(roomUrl)) return false;
+  return session.isSending;
 }
 
 /**
  * 刷新指定房间的弹幕缓冲到后端
+ * 仅在 isSending=true 时才实际发送，否则保留在缓冲区
  */
 async function flushDanmakuBatch(roomUrl) {
   const buffer = danmakuBatchBuffer.get(roomUrl);
   const session = danmakuSessions.get(roomUrl);
   if (!buffer || buffer.length === 0 || !session) return;
+  if (!session.isSending) return; // 未在录制，保留缓冲不发送
 
   const events = buffer.splice(0);
   session.eventCount += events.length;
@@ -100,10 +164,15 @@ async function flushDanmakuBatch(roomUrl) {
 }
 
 /**
- * 定时刷新所有弹幕缓冲
+ * 定时刷新弹幕缓冲 + 周期性检查录制状态
  */
-setInterval(() => {
+setInterval(async () => {
   for (const roomUrl of danmakuBatchBuffer.keys()) {
+    const session = danmakuSessions.get(roomUrl);
+    // 定期检查录制状态，自动启停发送
+    if (session && Date.now() - session.lastRecordingCheckAt > RECORDING_CHECK_INTERVAL_MS) {
+      await checkRecordingAndUpdateSession(roomUrl).catch(() => {});
+    }
     flushDanmakuBatch(roomUrl).catch(() => {});
   }
 }, DANMAKU_BATCH_FLUSH_MS);
@@ -498,6 +567,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     const roomUrl = tab?.url || '';
     if (!isKuaishouLiveRoomUrl(roomUrl)) return;
 
+    // 创建弹幕会话（缓冲模式，不立即发送）
     startDanmakuSession(
       roomUrl,
       request.sessionStartMs || Date.now(),
@@ -505,6 +575,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       request.url || roomUrl,
       request.title || tab.title || ''
     );
+
+    // 立即检查录制状态，如果已在录制中则马上开启发送
+    checkRecordingAndUpdateSession(roomUrl).catch(() => {});
     return;
   }
 
@@ -523,20 +596,31 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         roomUrl,
         tab.title || ''
       );
+      // 尝试检查录制状态并开启发送
+      checkRecordingAndUpdateSession(roomUrl).catch(() => {});
     }
 
+    const session = danmakuSessions.get(roomUrl);
     const buffer = danmakuBatchBuffer.get(roomUrl);
+    // 跳过正在停止的会话；限制缓冲区大小防止内存泄漏
+    if (session?.stopping) return;
     if (buffer && Array.isArray(request.events)) {
       buffer.push(...request.events);
+      // 防止缓冲区无限增长：超出上限时丢弃最早的事件
+      if (buffer.length > DANMAKU_MAX_BUFFER_SIZE) {
+        const dropped = buffer.length - DANMAKU_MAX_BUFFER_SIZE;
+        buffer.splice(0, dropped);
+        console.warn(`[Danmaku] 缓冲区溢出，丢弃 ${dropped} 条早期事件: ${roomUrl}`);
+      }
     }
     return;
   }
 
-  // 弹幕采集停止
+  // 弹幕采集停止（页面卸载时触发）
   if (request.Message === 'danmakuStop') {
     const roomUrl = request.url || sender.tab?.url || '';
     if (roomUrl) {
-      stopDanmakuSession(roomUrl);
+      stopDanmakuSession(roomUrl, true).catch(() => {});
     }
     return;
   }
