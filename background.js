@@ -789,18 +789,11 @@ async function handleStreamerOnline(
     );
     sendToEnvironments(targetEnvs, flvUrl, author.name, roomUrl, caption);
   } else {
-    // API 未返回流地址，尝试打开直播间让 webRequest 捕获
+    // API 未返回流地址，打开直播间页面让 webRequest 捕获 + 启动弹幕采集
     console.log(
       `🌐 ${author.name} 无流地址，尝试打开直播间页面让 webRequest 捕获`
     );
-    chrome.tabs.query(
-      { url: `*://live.kuaishou.com/u/${author.id}*` },
-      (tabs) => {
-        if (!tabs || !tabs.length) {
-          chrome.tabs.create({ url: roomUrl, active: false });
-        }
-      }
-    );
+    ensureDanmakuTab(roomUrl);
   }
 
   if (notifiedRooms.has(roomId)) return;
