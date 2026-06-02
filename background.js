@@ -545,6 +545,27 @@ chrome.webRequest.onBeforeRequest.addListener(
 
 // 监听来自 Popup or Options 的指令
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
+  // 弹幕采集状态查询（Popup 使用）
+  if (request.action === 'get_danmaku_status') {
+    const sessions = [];
+    for (const [roomUrl, session] of danmakuSessions) {
+      const buffer = danmakuBatchBuffer.get(roomUrl) || [];
+      sessions.push({
+        roomUrl,
+        title: session.title || '',
+        isSending: session.isSending,
+        stopping: session.stopping,
+        eventCount: session.eventCount,
+        bufferSize: buffer.length,
+        startedAt: session.startedAt,
+        sessionStartMs: session.sessionStartMs,
+        hasAutoTab: autoOpenedTabs.has(roomUrl),
+      });
+    }
+    sendResponse({ sessions });
+    return;
+  }
+
   if (request.action === 'clear_count') {
     console.log('收到清空指令');
 

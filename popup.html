@@ -27,7 +27,7 @@
       }
 
       body {
-        width: 680px;
+        width: 780px;
         min-height: 480px;
         font-family:
           -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto,
@@ -286,8 +286,6 @@
         padding: 24px 20px;
         box-shadow: var(--shadow-lg);
         text-align: center;
-        position: sticky;
-        top: 0;
       }
 
       .status-title {
@@ -405,6 +403,108 @@
         text-align: left;
       }
 
+      /* ========== 弹幕采集状态卡片 ========== */
+
+      .danmaku-card {
+        background: white;
+        border: 2px solid var(--gray-100);
+        border-radius: 16px;
+        padding: 16px;
+        box-shadow: var(--shadow-md);
+        margin-top: 12px;
+      }
+
+      .danmaku-card-title {
+        font-size: 13px;
+        color: var(--gray-600);
+        font-weight: 700;
+        letter-spacing: 0.5px;
+        margin-bottom: 10px;
+      }
+
+      .danmaku-empty {
+        font-size: 12px;
+        color: var(--gray-400);
+        text-align: center;
+        padding: 12px 0;
+      }
+
+      .danmaku-item {
+        padding: 10px;
+        background: var(--gray-50);
+        border-radius: 10px;
+        margin-bottom: 8px;
+        border: 1px solid var(--gray-100);
+      }
+
+      .danmaku-item:last-child {
+        margin-bottom: 0;
+      }
+
+      .danmaku-item-head {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 6px;
+      }
+
+      .danmaku-room {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--gray-800);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        max-width: 120px;
+      }
+
+      .danmaku-badge {
+        font-size: 10px;
+        padding: 2px 8px;
+        border-radius: 10px;
+        font-weight: 700;
+        white-space: nowrap;
+      }
+
+      .danmaku-badge.sending {
+        background: #dcfce7;
+        color: #16a34a;
+      }
+
+      .danmaku-badge.buffering {
+        background: #fef3c7;
+        color: #d97706;
+      }
+
+      .danmaku-badge.stopped {
+        background: #fee2e2;
+        color: #dc2626;
+      }
+
+      .danmaku-stats {
+        font-size: 11px;
+        color: var(--gray-600);
+        margin-bottom: 4px;
+        line-height: 1.6;
+      }
+
+      .danmaku-guidance {
+        font-size: 11px;
+        color: #2563eb;
+        margin-top: 6px;
+        cursor: pointer;
+        line-height: 1.5;
+      }
+
+      .danmaku-guidance:hover {
+        text-decoration: underline;
+      }
+
+      .danmaku-guidance.actionable {
+        color: #d97706;
+        font-weight: 600;
+      }
+
       .hidden {
         display: none;
       }
@@ -452,6 +552,13 @@
               <div class="info-label">上次请求结果</div>
               <div class="info-value" id="lastResult">--</div>
             </div>
+          </div>
+        </div>
+
+        <div class="danmaku-card">
+          <div class="danmaku-card-title">弹幕采集状态</div>
+          <div id="danmakuStatus">
+            <div class="danmaku-empty">暂无活跃的弹幕会话</div>
           </div>
         </div>
       </div>

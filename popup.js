@@ -254,8 +254,106 @@ function updateToggleUI(enabled) {
   }
 }
 
+// ========== 弹幕采集状态 ==========
+
+function formatDuration(ms) {
+  if (!ms || ms < 0) return '0s';
+  const seconds = Math.floor(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  if (minutes < 60) return `${minutes}m${secs}s`;
+  const hours = Math.floor(minutes / 60);
+  return `${hours}h${minutes % 60}m`;
+}
+
+function renderDanmakuStatus() {
+  chrome.runtime.sendMessage({ action: 'get_danmaku_status' }, (response) => {
+    const container = document.getElementById('danmakuStatus');
+    if (!container) return;
+
+    const sessions = response?.sessions || [];
+
+    if (sessions.length === 0) {
+      container.innerHTML = '<div class="danmaku-empty">暂无活跃的弹幕会话</div>';
+      return;
+    }
+
+    container.innerHTML = '';
+    for (const session of sessions) {
+      const item = document.createElement('div');
+      item.className = 'danmaku-item';
+
+      // 头部：房间名 + 状态徽章
+      const head = document.createElement('div');
+      head.className = 'danmaku-item-head';
+
+      const room = document.createElement('div');
+      room.className = 'danmaku-room';
+      room.textContent = session.title || session.roomUrl.split('/u/')[1] || '未知房间';
+      room.title = session.roomUrl;
+
+      const badge = document.createElement('span');
+      badge.className = 'danmaku-badge';
+      if (session.stopping) {
+        badge.classList.add('stopped');
+        badge.textContent = '已停止';
+      } else if (session.isSending) {
+        badge.classList.add('sending');
+        badge.textContent = '采集中';
+      } else {
+        badge.classList.add('buffering');
+        badge.textContent = '等待录制';
+      }
+
+      head.append(room, badge);
+      item.appendChild(head);
+
+      // 统计行
+      const stats = document.createElement('div');
+      stats.className = 'danmaku-stats';
+      const duration = formatDuration(Date.now() - session.startedAt);
+      const tabInfo = session.hasAutoTab ? ' · 后台标签页已打开' : '';
+      stats.textContent = `已采集 ${session.eventCount} 条 · 缓冲 ${session.bufferSize} 条 · 运行 ${duration}${tabInfo}`;
+      item.appendChild(stats);
+
+      // 状态引导
+      let guidanceText = '';
+      let actionable = false;
+      if (session.stopping) {
+        guidanceText = '会话正在关闭中，刷新页面可重新开始采集';
+      } else if (!session.isSending) {
+        // 等待录制状态——属于正常中间态，简要提示即可
+        guidanceText = '录制尚未开始，弹幕已缓冲等待发送';
+      } else if (session.isSending && session.eventCount === 0) {
+        // 已开启发送但没有任何事件——采集脚本可能没有正常工作
+        guidanceText = '点击打开直播间检查弹幕是否正常加载';
+        actionable = true;
+      }
+
+      if (guidanceText) {
+        const guidance = document.createElement('div');
+        guidance.className = 'danmaku-guidance' + (actionable ? ' actionable' : '');
+        guidance.textContent = guidanceText;
+
+        if (actionable && session.roomUrl) {
+          guidance.addEventListener('click', () => {
+            chrome.tabs.create({ url: session.roomUrl, active: true });
+          });
+        }
+
+        item.appendChild(guidance);
+      }
+
+      container.appendChild(item);
+    }
+  });
+}
+
 renderList();
 updateRequestDataUI();
+renderDanmakuStatus();
+setInterval(renderDanmakuStatus, 3000);
 
 chrome.storage.sync.get('monitorEnabled', (result) => {
   const enabled = result.monitorEnabled !== false;
