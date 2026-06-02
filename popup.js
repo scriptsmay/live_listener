@@ -250,7 +250,7 @@ function updateToggleUI(enabled) {
     toggleIcon.textContent = '📹';
     statusText.className = 'status-text off';
     statusText.textContent = '已停用';
-    statusDetail.textContent = '点击按钮启用';
+    statusDetail.textContent = '点击按钮启用后台关注';
   }
 }
 
@@ -275,7 +275,8 @@ function renderDanmakuStatus() {
     const sessions = response?.sessions || [];
 
     if (sessions.length === 0) {
-      container.innerHTML = '<div class="danmaku-empty">暂无活跃的弹幕会话</div>';
+      container.innerHTML =
+        '<div class="danmaku-empty">暂无活跃的弹幕会话</div>';
       return;
     }
 
@@ -290,7 +291,8 @@ function renderDanmakuStatus() {
 
       const room = document.createElement('div');
       room.className = 'danmaku-room';
-      room.textContent = session.title || session.roomUrl.split('/u/')[1] || '未知房间';
+      room.textContent =
+        session.title || session.roomUrl.split('/u/')[1] || '未知房间';
       room.title = session.roomUrl;
 
       const badge = document.createElement('span');
@@ -333,7 +335,8 @@ function renderDanmakuStatus() {
 
       if (guidanceText) {
         const guidance = document.createElement('div');
-        guidance.className = 'danmaku-guidance' + (actionable ? ' actionable' : '');
+        guidance.className =
+          'danmaku-guidance' + (actionable ? ' actionable' : '');
         guidance.textContent = guidanceText;
 
         if (actionable && session.roomUrl) {
