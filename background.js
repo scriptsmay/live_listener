@@ -280,6 +280,17 @@ function activateDanmakuForRoom(roomUrl) {
   console.log(`[Danmaku] 录制请求已确认，立即开启弹幕发送: ${roomUrl}`);
 }
 
+/**
+ * 录制被后端拒绝时，停止该房间的弹幕发送
+ * 配合 closeAutoOpenedTab 一起清理，使会话回到缓冲模式
+ */
+function deactivateDanmakuForRoom(roomUrl) {
+  const session = danmakuSessions.get(roomUrl);
+  if (!session || !session.isSending) return;
+  session.isSending = false;
+  console.log(`[Danmaku] 录制被拒绝，停止弹幕发送: ${roomUrl}`);
+}
+
 function setActiveRecordingRoom(roomUrl) {
   activeRecordingRoomUrl = roomUrl;
   chrome.storage.local.set({ activeRecordingRoomUrl });
@@ -378,6 +389,25 @@ async function sendToEnvironments(environments, url, title, roomUrl, caption = '
         console.log(
           `[Live Stream Sniffer][${env.name}] 录制请求成功: ${roomUrl}`
         );
+      } else if (result.data) {
+        // 后端拒绝录制（如 400 暂停监听）
+        const rejectionMsg =
+          result.data?.message ||
+          result.data?.status ||
+          `HTTP ${result.status}`;
+        console.warn(
+          `[Live Stream Sniffer][${env.name}] 录制被拒绝: ${rejectionMsg}`
+        );
+        // 清理该房间的录制相关状态
+        closeAutoOpenedTab(roomUrl);
+        deactivateDanmakuForRoom(roomUrl);
+        // 通知 Popup 清除过期的录制中标记
+        chrome.runtime.sendMessage({
+          action: 'recording_rejected',
+          roomUrl,
+          streamUrl: url,
+          message: rejectionMsg,
+        }).catch(() => {});
       }
       console.log(
         `[DEBUG][${env.name}] response:`,

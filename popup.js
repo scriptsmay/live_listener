@@ -384,6 +384,16 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   }
 });
 
+// 监听 background.js 的录制被拒通知，清除过期的"录制中"标记
+chrome.runtime.onMessage.addListener((request) => {
+  if (request.action === 'recording_rejected' && request.streamUrl) {
+    const statusKey = `status_${request.streamUrl}`;
+    chrome.storage.local.remove(statusKey, () => {
+      renderList();
+    });
+  }
+});
+
 document.addEventListener('click', async (e) => {
   if (
     e.target.classList.contains('btn-send') ||
