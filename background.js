@@ -23,9 +23,52 @@ let activeRecordingRoomUrl = null;
 // ========== 弹幕采集状态 ==========
 const danmakuSessions = new Map(); // roomUrl -> { sessionStartMs, eventCount, tabId, url, title, isSending, lastRecordingCheckAt }
 const danmakuBatchBuffer = new Map(); // roomUrl -> events[]
+const autoOpenedTabs = new Map(); // roomUrl -> tabId（扩展自动打开的弹幕采集标签页）
 const DANMAKU_BATCH_FLUSH_MS = 5000; // 5秒刷新一次
 const RECORDING_CHECK_INTERVAL_MS = 10000; // 10秒检查一次录制状态
 const DANMAKU_MAX_BUFFER_SIZE = 5000; // 缓冲区最大事件数（防止内存泄漏）
+
+/**
+ * 录制确认后自动打开后台标签页，确保弹幕采集脚本能注入
+ * 如果该房间已有打开的标签页（用户手动或之前自动打开的），不会重复创建
+ */
+async function ensureDanmakuTab(roomUrl) {
+  // 如果已有自动打开的标签页记录，先验证是否还存在
+  if (autoOpenedTabs.has(roomUrl)) {
+    const existingTabId = autoOpenedTabs.get(roomUrl);
+    try {
+      await chrome.tabs.get(existingTabId);
+      return; // 标签页仍存在，无需重复打开
+    } catch (_) {
+      autoOpenedTabs.delete(roomUrl); // 已关闭，清理记录
+    }
+  }
+
+  try {
+    const tab = await chrome.tabs.create({ url: roomUrl, active: false });
+    autoOpenedTabs.set(roomUrl, tab.id);
+    console.log(`[Danmaku] 自动打开后台标签页: ${roomUrl} (tabId=${tab.id})`);
+  } catch (err) {
+    console.warn(`[Danmaku] 自动打开标签页失败: ${roomUrl}`, err.message);
+  }
+}
+
+/**
+ * 录制结束后自动关闭扩展打开的后台标签页
+ * 用户手动打开的标签页不受影响
+ */
+async function closeAutoOpenedTab(roomUrl) {
+  const tabId = autoOpenedTabs.get(roomUrl);
+  if (tabId === undefined) return;
+
+  autoOpenedTabs.delete(roomUrl);
+  try {
+    await chrome.tabs.remove(tabId);
+    console.log(`[Danmaku] 录制结束，已关闭自动标签页: ${roomUrl} (tabId=${tabId})`);
+  } catch (_) {
+    // 标签页可能已被用户手动关闭
+  }
+}
 
 /**
  * 启动弹幕会话（仅创建缓冲，不立即发送）
@@ -106,10 +149,11 @@ async function checkRecordingAndUpdateSession(roomUrl) {
     session.isSending = true;
     console.log(`[Danmaku] 录制中，开始发送弹幕: ${roomUrl}`);
   } else if (!isRecording && session.isSending) {
-    // 录制结束 → 先刷新剩余缓冲，再关闭发送
+    // 录制结束 → 先刷新剩余缓冲，再关闭发送，最后关闭自动打开的标签页
     console.log(`[Danmaku] 录制已结束，停止发送弹幕: ${roomUrl}`);
     await flushDanmakuBatch(roomUrl).catch(() => {});
     session.isSending = false;
+    await closeAutoOpenedTab(roomUrl);
   }
 
   // 网络 await 期间会话可能已被 stop，重新检查
@@ -225,6 +269,17 @@ function addDetectedStream(stream) {
   chrome.storage.local.set({ streams: detectedStreams });
 }
 
+/**
+ * 录制请求成功后，立即激活该房间的弹幕发送
+ * 跳过等待录制状态轮询，消除最多 10 秒的发送延迟
+ */
+function activateDanmakuForRoom(roomUrl) {
+  const session = danmakuSessions.get(roomUrl);
+  if (!session || session.isSending || session.stopping) return;
+  session.isSending = true;
+  console.log(`[Danmaku] 录制请求已确认，立即开启弹幕发送: ${roomUrl}`);
+}
+
 function setActiveRecordingRoom(roomUrl) {
   activeRecordingRoomUrl = roomUrl;
   chrome.storage.local.set({ activeRecordingRoomUrl });
@@ -292,6 +347,8 @@ async function sendToEnvironments(environments, url, title, roomUrl, caption = '
           `[Live Stream Sniffer][${env.name}] 已在录制中，跳过: ${roomUrl}`
         );
         setActiveRecordingRoom(roomUrl);
+        activateDanmakuForRoom(roomUrl);
+        ensureDanmakuTab(roomUrl);
         activeCount++;
         alreadyRecording = true;
       }
@@ -315,6 +372,8 @@ async function sendToEnvironments(environments, url, title, roomUrl, caption = '
       });
       if (result.ok) {
         setActiveRecordingRoom(roomUrl);
+        activateDanmakuForRoom(roomUrl);
+        ensureDanmakuTab(roomUrl);
         activeCount++;
         console.log(
           `[Live Stream Sniffer][${env.name}] 录制请求成功: ${roomUrl}`
