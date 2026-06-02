@@ -15,23 +15,9 @@
 
 3. **目标直播间正在直播**：`https://live.kuaishou.com/u/KPL704668133` 需要在直播状态，否则无法捕获直播流和弹幕。
 
-## 步骤一：修改 manifest 权限
+## 步骤一：确认 manifest 权限
 
-当前 `manifest.json` 的 `host_permissions` 未声明 `localhost:3001`，Options 页面会拒绝保存不在权限范围内的 Base URL。需要在 `host_permissions` 中加入开发端口（如果尚未添加）：
-
-```json
-"host_permissions": [
-  "*://*.kuaishou.com/*",
-  "*://*.yximgs.com/*",
-  "http://localhost:1123/*",
-  "http://localhost:3001/*",
-  "http://localhost:*/*",
-  "http://192.168.31.247:*/*",
-  "http://192.168.31.247:11123/*"
-]
-```
-
-修改后在 `chrome://extensions` 页面重新加载扩展。
+`manifest.json` 的 `host_permissions` 中已包含 `http://localhost:3001/*` 和 `http://localhost:*/*`。如果后续新增环境端口，需要同步更新 manifest 并在 `chrome://extensions` 页面重新加载扩展。
 
 ## 步骤二：配置开发环境
 
@@ -122,6 +108,51 @@
 3. 点击"开始录制"按钮。
 4. 按钮变为"已发送"后，弹幕发送通道应在 10 秒内自动开启。
 
+## 步骤六：通过 Popup 弹幕状态面板观察采集
+
+Popup 右侧下方的"弹幕采集状态"面板每 3 秒自动刷新，是观察弹幕采集是否正常的最直观方式：
+
+1. 打开 Popup，查看右侧"弹幕采集状态"卡片。
+2. 如果直播间已打开且弹幕脚本注入成功，应看到一个会话条目，显示房间名和状态徽章。
+3. 状态含义：
+   - **采集中**（绿色）：`isSending=true`，弹幕正在向后端发送。统计行显示已采集事件数、缓冲条数、运行时长。
+   - **等待录制**（橙色）：弹幕会话已创建但后端尚未开始录制，弹幕在缓冲中等待。
+   - **已停止**（红色）：会话正在关闭。
+4. 如果状态为"采集中"但已采集条数为 0，面板会显示橙色引导提示"点击打开直播间检查弹幕是否正常加载"——点击后跳转到直播间标签页。
+
+## 步骤七：测试自动标签页行为
+
+当后台轮询检测到开播并成功推送录制请求后，扩展会自动在后台打开直播间标签页用于弹幕采集：
+
+1. 确保关注的主播正在直播，且后端录制请求返回成功（200）。
+2. 在 Service Worker Console 中应看到：
+```
+[Danmaku] 自动打开后台标签页: https://live.kuaishou.com/u/xxx (tabId=N)
+```
+3. 浏览器标签栏中会出现一个新的后台标签页（不会自动切换过去）。
+4. 该标签页加载完成后，弹幕采集脚本自动注入，弹幕开始采集。
+5. 在 Popup 弹幕状态面板中，应看到该房间显示"采集中"且"后台标签页已打开"。
+6. 当后端录制结束后，Service Worker Console 应出现：
+```
+[Danmaku] 录制结束，已关闭自动标签页: https://live.kuaishou.com/u/xxx (tabId=N)
+```
+7. 后台标签页自动关闭。
+
+## 步骤八：测试录制拒绝场景
+
+当后端返回非 2xx 响应（如 400 "暂停监听"）时：
+
+1. Service Worker Console 应输出：
+```
+[Live Stream Sniffer][development] 录制被拒绝: 直播间 xxx 已暂停监听
+```
+2. 不会自动打开后台标签页。
+3. Popup 中该直播间的"开始录制"按钮不会被标记为"录制中"（如果有旧标记会被自动清除）。
+4. 如果之前有弹幕会话处于发送状态，会被回退到缓冲模式：
+```
+[Danmaku] 录制被拒绝，停止弹幕发送: https://live.kuaishou.com/u/xxx
+```
+
 ## 排查要点
 
 **弹幕采集不到**：
@@ -145,7 +176,23 @@
 ## 完整的数据流示意
 
 ```
-快手直播间 WebSocket
+关注列表轮询 / webRequest / content.js
+       │
+       ▼
+  sendToEnvironments()
+  ├─ 录制请求成功 (2xx)
+  │   ├─ setActiveRecordingRoom()
+  │   ├─ activateDanmakuForRoom() → isSending=true
+  │   └─ ensureDanmakuTab() → chrome.tabs.create({ active: false })
+  │
+  └─ 录制被拒绝 (非 2xx)
+      ├─ 日志输出拒绝原因
+      ├─ deactivateDanmakuForRoom() → isSending=false（回退缓冲）
+      ├─ closeAutoOpenedTab() → 关闭自动标签页
+      └─ recording_rejected 消息 → Popup 清除过期"录制中"标记
+
+自动标签页加载后：
+  快手直播间 WebSocket
        │
        ▼
   inject.js (MAIN world)
@@ -165,12 +212,16 @@
   background.js (Service Worker)
   ├─ danmakuSessions Map（会话管理）
   ├─ danmakuBatchBuffer Map（事件缓冲）
+  ├─ autoOpenedTabs Map（自动标签页追踪）
   ├─ checkRecordingAndUpdateSession()（每 10 秒检查录制状态）
   │   ├─ 录制中 → isSending=true → 开启发送
-  │   └─ 未录制 → flush剩余 → isSending=false → 压制（只缓冲不发送）
+  │   └─ 未录制 → flush 剩余 → isSending=false → closeAutoOpenedTab()
   ├─ flushDanmakuBatch()（每 5 秒）
   │   ├─ isSending=false → 跳过（保留缓冲）
   │   └─ isSending=true → 标准化 → 过滤 → POST /api/danmaku/batch
+  │
+  ├─ Popup get_danmaku_status 查询（每 3 秒）
+  │   └─ 返回所有活跃会话的状态、统计、引导信息
   │
   ▼
   后端 (localhost:3001)
