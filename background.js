@@ -64,7 +64,9 @@ async function closeAutoOpenedTab(roomUrl) {
   autoOpenedTabs.delete(roomUrl);
   try {
     await chrome.tabs.remove(tabId);
-    console.log(`[Danmaku] 录制结束，已关闭自动标签页: ${roomUrl} (tabId=${tabId})`);
+    console.log(
+      `[Danmaku] 录制结束，已关闭自动标签页: ${roomUrl} (tabId=${tabId})`
+    );
   } catch (_) {
     // 标签页可能已被用户手动关闭
   }
@@ -98,7 +100,9 @@ function startDanmakuSession(roomUrl, sessionStartMs, tabId, url, title) {
 async function stopDanmakuSession(roomUrl, forceFlush = false) {
   const session = danmakuSessions.get(roomUrl);
   if (session) {
-    console.log(`[Danmaku] 采集会话结束: ${roomUrl}, 共 ${session.eventCount} 条事件`);
+    console.log(
+      `[Danmaku] 采集会话结束: ${roomUrl}, 共 ${session.eventCount} 条事件`
+    );
     // 1. 标记停止，阻止后续事件进入缓冲
     session.stopping = true;
 
@@ -188,16 +192,19 @@ async function flushDanmakuBatch(roomUrl) {
     for (const env of config.environments) {
       if (!env.enabled) continue;
       try {
-        await fetchJson(env.danmakuBatchApiUrl || `${env.baseUrl}${DANMAKU_BATCH_API_PATH}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            room_url: roomUrl,
-            events: filtered,
-            session_start_ms: session.sessionStartMs,
-            title: session.title || '',
-          }),
-        });
+        await fetchJson(
+          env.danmakuBatchApiUrl || `${env.baseUrl}${DANMAKU_BATCH_API_PATH}`,
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              room_url: roomUrl,
+              events: filtered,
+              session_start_ms: session.sessionStartMs,
+              title: session.title || '',
+            }),
+          }
+        );
       } catch (err) {
         console.warn(`[Danmaku] 批量发送到 ${env.name} 失败:`, err.message);
       }
@@ -214,7 +221,10 @@ setInterval(async () => {
   for (const roomUrl of danmakuBatchBuffer.keys()) {
     const session = danmakuSessions.get(roomUrl);
     // 定期检查录制状态，自动启停发送
-    if (session && Date.now() - session.lastRecordingCheckAt > RECORDING_CHECK_INTERVAL_MS) {
+    if (
+      session &&
+      Date.now() - session.lastRecordingCheckAt > RECORDING_CHECK_INTERVAL_MS
+    ) {
       await checkRecordingAndUpdateSession(roomUrl).catch(() => {});
     }
     flushDanmakuBatch(roomUrl).catch(() => {});
@@ -344,7 +354,13 @@ async function isEnvironmentRecording(env, roomUrl) {
   );
 }
 
-async function sendToEnvironments(environments, url, title, roomUrl, caption = '') {
+async function sendToEnvironments(
+  environments,
+  url,
+  title,
+  roomUrl,
+  caption = ''
+) {
   let activeCount = 0;
 
   for (const env of environments) {
@@ -402,12 +418,14 @@ async function sendToEnvironments(environments, url, title, roomUrl, caption = '
         closeAutoOpenedTab(roomUrl);
         deactivateDanmakuForRoom(roomUrl);
         // 通知 Popup 清除过期的录制中标记
-        chrome.runtime.sendMessage({
-          action: 'recording_rejected',
-          roomUrl,
-          streamUrl: url,
-          message: rejectionMsg,
-        }).catch(() => {});
+        chrome.runtime
+          .sendMessage({
+            action: 'recording_rejected',
+            roomUrl,
+            streamUrl: url,
+            message: rejectionMsg,
+          })
+          .catch(() => {});
       }
       console.log(
         `[DEBUG][${env.name}] response:`,
@@ -720,7 +738,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       if (buffer.length > DANMAKU_MAX_BUFFER_SIZE) {
         const dropped = buffer.length - DANMAKU_MAX_BUFFER_SIZE;
         buffer.splice(0, dropped);
-        console.warn(`[Danmaku] 缓冲区溢出，丢弃 ${dropped} 条早期事件: ${roomUrl}`);
+        console.warn(
+          `[Danmaku] 缓冲区溢出，丢弃 ${dropped} 条早期事件: ${roomUrl}`
+        );
       }
     }
     return;
@@ -794,7 +814,7 @@ async function handleStreamerOnline(
   author,
   roomId,
   playUrls,
-  caption,
+  caption = '',
   targetEnvs
 ) {
   const roomUrl = `https://live.kuaishou.com/u/${author.id}`;
@@ -808,7 +828,7 @@ async function handleStreamerOnline(
   }
 
   console.log(
-    `主播 ${author.name} 开播了，直播间: ${roomUrl}, FLV地址: ${flvUrl}`
+    `[INFO] 主播 ${author.name} 开播了，[${caption}]，直播间: ${roomUrl}, FLV地址: ${flvUrl}`
   );
 
   if (flvUrl) {
@@ -823,7 +843,7 @@ async function handleStreamerOnline(
     console.log(
       `🌐 ${author.name} 无流地址，尝试打开直播间页面让 webRequest 捕获`
     );
-    ensureDanmakuTab(roomUrl);
+    // ensureDanmakuTab(roomUrl);
   }
 
   if (notifiedRooms.has(roomId)) return;
@@ -831,14 +851,14 @@ async function handleStreamerOnline(
   chrome.storage.local.set({ notifiedRooms: [...notifiedRooms] });
   chrome.storage.local.set({ [`notify_${roomId}`]: roomUrl });
 
-  chrome.notifications.create(`notify_${roomId}`, {
-    type: 'basic',
-    iconUrl: 'icon.png',
-    title: `${author.name} 开播了！`,
-    message: caption || '正在直播',
-    contextMessage: '点击打开直播间',
-    requireInteraction: true,
-  });
+  // chrome.notifications.create(`notify_${roomId}`, {
+  //   type: 'basic',
+  //   iconUrl: 'icon.png',
+  //   title: `${author.name} 开播了！`,
+  //   message: caption || '正在直播',
+  //   contextMessage: '点击打开直播间',
+  //   requireInteraction: true,
+  // });
 }
 
 function randomDelay(min, max) {
@@ -904,7 +924,10 @@ async function checkFollowingLivings() {
             break;
           }
         } catch (err) {
-          console.warn(`[Live Stream Sniffer][${env.name}] 录制状态查询失败:`, err);
+          console.warn(
+            `[Live Stream Sniffer][${env.name}] 录制状态查询失败:`,
+            err
+          );
         }
       }
 
@@ -920,9 +943,7 @@ async function checkFollowingLivings() {
       await chrome.storage.local.get('kuaishouVisited');
     if (!kuaishouVisited) return;
 
-    const authors = new Set(
-      enabledEnvs.flatMap((env) => getEnvAuthors(env))
-    );
+    const authors = new Set(enabledEnvs.flatMap((env) => getEnvAuthors(env)));
     if (!authors.size) return;
 
     // 随机延迟 2~6s，避免每次请求时间固定被风控

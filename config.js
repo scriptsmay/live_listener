@@ -3,8 +3,11 @@
 export const FOLLOWED_AUTHORS = ['KSG无言'];
 export const CONFIG_VERSION = 2;
 
+// 通知直播间录制接口
 export const NOTIFY_API_PATH = '/api/notify/live_download';
+// 直播间录制状态查询
 export const STATUS_API_PATH = '/api/notify/status';
+// 弹幕收集接口，支持批量查询多个直播间的弹幕数据
 export const DANMAKU_BATCH_API_PATH = '/api/danmaku/batch';
 
 function buildEnvironment(baseUrl, overrides = {}) {
