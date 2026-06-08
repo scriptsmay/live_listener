@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Live Stream Sniffer",
-  "version": "1.1",
+  "version": "1.0.2",
   "permissions": ["webRequest", "storage", "alarms", "notifications"],
   "host_permissions": [
     "*://*.kuaishou.com/*",
