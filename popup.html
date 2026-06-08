@@ -414,12 +414,74 @@
         margin-top: 12px;
       }
 
+      .danmaku-card-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 10px;
+      }
+
       .danmaku-card-title {
         font-size: 13px;
         color: var(--gray-600);
         font-weight: 700;
         letter-spacing: 0.5px;
-        margin-bottom: 10px;
+      }
+
+      /* 弹幕采集开关 */
+      .danmaku-switch {
+        position: relative;
+        display: inline-flex;
+        align-items: center;
+        cursor: pointer;
+        user-select: none;
+        gap: 8px;
+      }
+
+      .danmaku-switch input {
+        display: none;
+      }
+
+      .danmaku-switch-track {
+        position: relative;
+        width: 44px;
+        height: 24px;
+        background: var(--gray-200);
+        border-radius: 12px;
+        transition: background 0.3s;
+        flex-shrink: 0;
+      }
+
+      .danmaku-switch input:checked + .danmaku-switch-track {
+        background: var(--success);
+      }
+
+      .danmaku-switch-track::after {
+        content: '';
+        position: absolute;
+        top: 2px;
+        left: 2px;
+        width: 20px;
+        height: 20px;
+        background: white;
+        border-radius: 50%;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+        transition: transform 0.3s;
+      }
+
+      .danmaku-switch input:checked + .danmaku-switch-track::after {
+        transform: translateX(20px);
+      }
+
+      .danmaku-switch-label {
+        font-size: 12px;
+        font-weight: 600;
+        color: var(--gray-400);
+        min-width: 24px;
+      }
+
+      .danmaku-switch input:checked ~ .danmaku-switch-label {
+        color: var(--success);
       }
 
       .danmaku-empty {
@@ -557,7 +619,14 @@
         </div>
 
         <div class="danmaku-card">
-          <div class="danmaku-card-title">弹幕采集状态</div>
+          <div class="danmaku-card-header">
+            <div class="danmaku-card-title">弹幕采集</div>
+            <label class="danmaku-switch">
+              <input type="checkbox" id="danmakuToggle" />
+              <span class="danmaku-switch-track"></span>
+              <span class="danmaku-switch-label" id="danmakuSwitchLabel">关</span>
+            </label>
+          </div>
           <div id="danmakuStatus">
             <div class="danmaku-empty">暂无活跃的弹幕会话</div>
           </div>

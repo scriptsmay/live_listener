@@ -108,6 +108,7 @@ export async function getConfig() {
   });
   return {
     configVersion: CONFIG_VERSION,
+    danmakuEnabled: storage.danmakuEnabled ?? false,
     environments,
     // 兼容旧调用方，新代码应使用 environments[*].followedAuthors。
     followedAuthors: legacyAuthors ?? FOLLOWED_AUTHORS,

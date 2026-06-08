@@ -272,6 +272,17 @@ function renderDanmakuStatus() {
     const container = document.getElementById('danmakuStatus');
     if (!container) return;
 
+    // 更新弹幕开关 UI
+    const toggle = document.getElementById('danmakuToggle');
+    const switchLabel = document.getElementById('danmakuSwitchLabel');
+    const enabled = response?.danmakuEnabled ?? false;
+    if (toggle) {
+      toggle.checked = enabled;
+    }
+    if (switchLabel) {
+      switchLabel.textContent = enabled ? '开' : '关';
+    }
+
     const sessions = response?.sessions || [];
 
     if (sessions.length === 0) {
@@ -385,6 +396,25 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   if (changes.lastReqStatus && changes.lastReqStatus.newValue) {
     updateRequestDataUI();
   }
+});
+
+// 弹幕采集开关变更时同步 UI（background 自动切换时触发）
+chrome.storage.onChanged.addListener((changes, areaName) => {
+  if (areaName !== 'sync') return;
+  if (changes.danmakuEnabled !== undefined) {
+    renderDanmakuStatus();
+  }
+});
+
+// 弹幕采集开关交互
+document.getElementById('danmakuToggle').addEventListener('change', (e) => {
+  const enabled = e.target.checked;
+  chrome.runtime.sendMessage(
+    { action: 'toggle_danmaku', enabled },
+    () => {
+      renderDanmakuStatus();
+    }
+  );
 });
 
 // 监听 background.js 的录制被拒通知，清除过期的"录制中"标记

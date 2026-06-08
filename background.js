@@ -20,6 +20,48 @@ let detectedStreams = [];
 const bestStreamsByRoom = new Map();
 let activeRecordingRoomUrl = null;
 
+// ========== 弹幕采集开关 ==========
+
+/**
+ * 设置弹幕采集开关状态，持久化并通知所有直播间标签页
+ * @param {boolean} enabled - 是否启用弹幕采集
+ */
+async function setDanmakuEnabled(enabled) {
+  await chrome.storage.sync.set({ danmakuEnabled: enabled });
+  console.log(`[Danmaku] 弹幕采集开关已${enabled ? '开启' : '关闭'}`);
+
+  // 通知所有快手直播间标签页
+  try {
+    const tabs = await chrome.tabs.query({ url: '*://live.kuaishou.com/*' });
+    for (const tab of tabs) {
+      chrome.tabs
+        .sendMessage(tab.id, {
+          action: enabled ? 'start_danmaku' : 'stop_danmaku',
+        })
+        .catch(() => {});
+    }
+  } catch (_) {}
+}
+
+/**
+ * 检查是否还有活跃的弹幕发送会话，若无则自动关闭开关
+ */
+async function autoDisableDanmakuIfIdle() {
+  let hasActiveSession = false;
+  for (const [, session] of danmakuSessions) {
+    if (session.isSending && !session.stopping) {
+      hasActiveSession = true;
+      break;
+    }
+  }
+  if (!hasActiveSession) {
+    const config = await getConfig();
+    if (config.danmakuEnabled) {
+      await setDanmakuEnabled(false);
+    }
+  }
+}
+
 // ========== 弹幕采集状态 ==========
 const danmakuSessions = new Map(); // roomUrl -> { sessionStartMs, eventCount, tabId, url, title, isSending, lastRecordingCheckAt }
 const danmakuBatchBuffer = new Map(); // roomUrl -> events[]
@@ -124,6 +166,9 @@ async function stopDanmakuSession(roomUrl, forceFlush = false) {
     danmakuSessions.delete(roomUrl);
     danmakuBatchBuffer.delete(roomUrl);
   }
+
+  // 5. 若无活跃发送会话，自动关闭弹幕开关
+  autoDisableDanmakuIfIdle();
 }
 
 /**
@@ -375,6 +420,7 @@ async function sendToEnvironments(
         );
         setActiveRecordingRoom(roomUrl);
         activateDanmakuForRoom(roomUrl);
+        setDanmakuEnabled(true);
         ensureDanmakuTab(roomUrl);
         activeCount++;
         alreadyRecording = true;
@@ -400,6 +446,7 @@ async function sendToEnvironments(
       if (result.ok) {
         setActiveRecordingRoom(roomUrl);
         activateDanmakuForRoom(roomUrl);
+        setDanmakuEnabled(true);
         ensureDanmakuTab(roomUrl);
         activeCount++;
         console.log(
@@ -610,8 +657,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         hasAutoTab: autoOpenedTabs.has(roomUrl),
       });
     }
-    sendResponse({ sessions });
-    return;
+    getConfig().then((config) => {
+      sendResponse({ sessions, danmakuEnabled: config.danmakuEnabled ?? false });
+    });
+    return true; // 保持异步通道
   }
 
   if (request.action === 'clear_count') {
@@ -647,6 +696,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       checkFollowingLivings();
     }
     sendResponse({ status: 'ok' });
+  }
+
+  // 弹幕采集开关切换（Popup 使用）
+  if (request.action === 'toggle_danmaku') {
+    setDanmakuEnabled(request.enabled).then(() => {
+      sendResponse({ status: 'ok', danmakuEnabled: request.enabled });
+    });
+    return true; // 保持异步通道
   }
 
   // 来自 content.js 的视频流检测（同时起到 MV3 心跳保活作用）
