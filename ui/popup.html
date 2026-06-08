@@ -1,0 +1,70 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <div class="container">
+      <div class="left-panel">
+        <div class="streams-header">
+          <div class="streams-title">
+            📺 检测到的直播流
+            <span class="badge" id="streamCount">0</span>
+          </div>
+          <button class="btn-clear" id="clearBtn">清空列表</button>
+        </div>
+
+        <div class="streams-list" id="streamsContainer">
+          <div class="empty-state" id="emptyState">
+            <div class="empty-icon">🔍</div>
+            <div class="empty-text">暂无检测到的直播流</div>
+          </div>
+          <div id="list"></div>
+        </div>
+      </div>
+
+      <div class="right-panel">
+        <div class="status-card">
+          <button
+            class="toggle-button off"
+            id="toggleButton"
+            title="点击切换状态"
+          >
+            <span id="toggleIcon">📹</span>
+          </button>
+          <div class="status-text off" id="statusText">已停用</div>
+          <div class="status-detail" id="statusDetail">
+            点击按钮启用后台关注
+          </div>
+
+          <div class="info-section">
+            <div class="info-item">
+              <div class="info-label">上次请求时间</div>
+              <div class="info-value" id="lastReqTime">--</div>
+            </div>
+            <div class="info-item">
+              <div class="info-label">上次请求结果</div>
+              <div class="info-value" id="lastResult">--</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="danmaku-card">
+          <div class="danmaku-card-header">
+            <div class="danmaku-card-title">弹幕采集</div>
+            <label class="danmaku-switch">
+              <input type="checkbox" id="danmakuToggle" />
+              <span class="danmaku-switch-track"></span>
+              <span class="danmaku-switch-label" id="danmakuSwitchLabel">关</span>
+            </label>
+          </div>
+          <div id="danmakuStatus">
+            <div class="danmaku-empty">暂无活跃的弹幕会话</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

@@ -1,8 +1,10 @@
-// content.js
+// content/content.js
 // 三重职责：
 // 1. 检测 <video> 标签的 currentSrc，捕获 webRequest 可能遗漏的流地址
 // 2. 受控注入 inject.js 到页面 MAIN world，拦截快手弹幕 WebSocket
 // 3. 将 inject.js 拦截的弹幕事件转发给 background.js
+//
+// 注意：content_scripts 不支持 ESM，不能使用 import，必要函数直接内联
 
 const TAG = '[Content]';
 
@@ -21,7 +23,7 @@ function sniffVideo() {
   const video = document.querySelector('video');
   if (video && video.currentSrc && video.currentSrc.startsWith('http')) {
     chrome.runtime.sendMessage({
-      Message: 'addMedia',
+      action: 'add_media',
       url: video.currentSrc,
     });
   }
@@ -43,7 +45,7 @@ function injectDanmakuScript() {
 
   try {
     const script = document.createElement('script');
-    script.src = chrome.runtime.getURL('inject.js');
+    script.src = chrome.runtime.getURL('content/inject.js');
     script.onload = function () {
       console.log(TAG, 'inject.js 已注入到页面');
       danmakuInjected = true;
@@ -62,10 +64,10 @@ function injectDanmakuScript() {
 
 // ========== 4. 弹幕事件转发 ==========
 
-// 弹幕事件缓冲（每 5 秒批量发送一次）
+// 弹幕事件缓冲（每 3 秒批量发送一次，由前端聚合避免 SW 休眠问题）
 let danmakuBuffer = [];
 let flushTimer = null;
-const FLUSH_INTERVAL_MS = 5000;
+const FLUSH_INTERVAL_MS = 3000;
 let danmakuSessionStartMs = 0;
 
 /**
@@ -76,7 +78,7 @@ function flushDanmakuBuffer() {
 
   const batch = danmakuBuffer.splice(0);
   chrome.runtime.sendMessage({
-    Message: 'danmakuBatch',
+    action: 'danmaku_batch',
     events: batch,
     sessionStartMs: danmakuSessionStartMs,
     timestamp: Date.now(),
@@ -119,7 +121,7 @@ function startDanmakuCollection() {
 
   // 通知 background.js 弹幕采集已启动
   chrome.runtime.sendMessage({
-    Message: 'danmakuReady',
+    action: 'danmaku_ready',
     sessionStartMs: danmakuSessionStartMs,
     url: location.href,
     title: document.title,
@@ -140,7 +142,7 @@ function stopDanmakuCollection() {
 
   // 通知 background.js 弹幕采集结束
   chrome.runtime.sendMessage({
-    Message: 'danmakuStop',
+    action: 'danmaku_stop',
     url: location.href,
   });
 
@@ -189,7 +191,7 @@ window.addEventListener('beforeunload', () => {
   if (danmakuActive) {
     flushDanmakuBuffer();
     chrome.runtime.sendMessage({
-      Message: 'danmakuStop',
+      action: 'danmaku_stop',
       url: location.href,
     });
   }

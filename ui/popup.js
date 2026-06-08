@@ -1,69 +1,7 @@
-import { QUALITY_LABELS, getConfig } from './config.js';
-
-const REQUEST_TIMEOUT_MS = 8000;
-
-function getQualityInfo(url) {
-  for (let q of QUALITY_LABELS) {
-    if (url.includes(q.key)) return q;
-  }
-  return { label: '未知', color: '#666' };
-}
-
-async function fetchJson(url, options = {}, timeoutMs = REQUEST_TIMEOUT_MS) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
-  try {
-    const resp = await fetch(url, {
-      ...options,
-      signal: controller.signal,
-    });
-    const text = await resp.text();
-    let data = null;
-
-    if (text) {
-      try {
-        data = JSON.parse(text);
-      } catch (_) {
-        data = { raw: text };
-      }
-    }
-
-    return {
-      ok: resp.ok,
-      status: resp.status,
-      data,
-    };
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
-async function isEnvironmentRecording(env, roomUrl) {
-  if (!roomUrl) return false;
-  const result = await fetchJson(
-    `${env.statusApiUrl}?url=${encodeURIComponent(roomUrl)}`
-  );
-  const data = result.data || {};
-
-  return (
-    result.ok &&
-    data.exists &&
-    (data.data?.status === 'recording' || data.data?.status === 'paused')
-  );
-}
-
-async function sendRecordingRequest(env, streamUrl, title, roomUrl) {
-  return fetchJson(env.notifyApiUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      url: streamUrl,
-      title,
-      room_url: roomUrl,
-    }),
-  });
-}
+import { getConfig } from '../core/config.js';
+import { getQualityInfo } from '../core/stream-quality.js';
+import { isEnvironmentRecording, sendRecordingRequest } from '../core/recording.js';
+import { isKuaishouLiveRoomUrl } from '../lib/url.js';
 
 function padTime(value) {
   return `${value}`.padStart(2, '0');
@@ -82,18 +20,6 @@ function formatStreamTime(timestamp) {
 
   if (sameDay) return time;
   return `${padTime(date.getMonth() + 1)}-${padTime(date.getDate())} ${time}`;
-}
-
-function isKuaishouLiveRoomUrl(url) {
-  try {
-    const parsed = new URL(url);
-    return (
-      parsed.hostname === 'live.kuaishou.com' &&
-      /^\/u\/[^/?#]+/.test(parsed.pathname)
-    );
-  } catch (_) {
-    return false;
-  }
 }
 
 function normalizeStream(stream) {
@@ -223,8 +149,6 @@ function updateRequestDataUI() {
         let text = result.status === 200 ? '✅ ' : '❌ ';
         text += '开播列表：' + (result.onlineAuthors || '无');
         el.innerText = text;
-        // el.innerHTML = JSON.stringify(result, null, 2);
-        // el.innerText = result.status === 200 ? '✅ 成功' : '❌ 失败';
       } else {
         el.innerText =
           result.length > 20 ? result.substring(0, 20) + '...' : result;
@@ -336,10 +260,8 @@ function renderDanmakuStatus() {
       if (session.stopping) {
         guidanceText = '会话正在关闭中，刷新页面可重新开始采集';
       } else if (!session.isSending) {
-        // 等待录制状态——属于正常中间态，简要提示即可
         guidanceText = '录制尚未开始，弹幕已缓冲等待发送';
       } else if (session.isSending && session.eventCount === 0) {
-        // 已开启发送但没有任何事件——采集脚本可能没有正常工作
         guidanceText = '点击打开直播间检查弹幕是否正常加载';
         actionable = true;
       }

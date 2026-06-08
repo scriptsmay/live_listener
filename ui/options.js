@@ -1,4 +1,4 @@
-import { CONFIG_VERSION, DEFAULT_ENVIRONMENTS, getConfig } from './config.js';
+import { CONFIG_VERSION, DEFAULT_ENVIRONMENTS, getConfig } from '../core/config.js';
 
 function createEnvField(labelText, control) {
   const field = document.createElement('div');
@@ -153,7 +153,6 @@ saveButton.addEventListener('click', () => {
     { configVersion: CONFIG_VERSION, environments },
     () => {
       chrome.runtime.sendMessage({ action: 'recheck_following' });
-      // alert('配置已更新，已开始重新检测');
       saveButton.innerText = '保存成功';
       saveButton.disabled = true;
       setTimeout(resetButton, 2000);

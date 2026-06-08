@@ -1,4 +1,6 @@
-// config.js
+// core/config.js
+// 环境配置 + getConfig()
+// 从根目录 config.js 迁移，移除清晰度相关常量（已迁至 core/stream-quality.js）
 
 export const FOLLOWED_AUTHORS = ['KSG无言'];
 export const CONFIG_VERSION = 2;
@@ -35,32 +37,6 @@ export const DEFAULT_ENVIRONMENTS = [
     followedAuthors: [],
   }),
 ];
-
-// 定义关键词对应的显示文字和颜色
-export const QUALITY_LABELS = [
-  { key: 'Ultra4k', label: '4K', color: '#8b5cf6' },
-  { key: 'FhdL4', label: '1080p 8M', color: '#ff5000' },
-  { key: 'FhdL3', label: '1080p 6M', color: '#f36411' },
-  { key: 'FhdL1', label: '1080p 2M', color: '#ff7a1a' },
-  { key: 'Fhd', label: '1080p', color: '#ff8c00' },
-  { key: 'HdL0', label: '超清', color: '#00bfff' },
-  { key: 'HdL', label: '720p', color: '#1e90ff' },
-  { key: 'Sd', label: '标清', color: '#999' },
-  { key: 'Ld', label: '流畅', color: '#ccc' },
-];
-
-// 定义清晰度权重
-export const QUALITY_WEIGHTS = {
-  Ultra4k: 120,
-  FhdL4: 100,
-  FhdL3: 90,
-  FhdL1: 84,
-  Fhd: 80,
-  HdL0: 50,
-  HdL: 40,
-  Sd: 10,
-  Ld: 0,
-};
 
 export const POLL_INTERVAL_MINUTES = 1;
 
