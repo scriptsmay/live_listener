@@ -339,6 +339,11 @@ document.getElementById('danmakuToggle').addEventListener('change', (e) => {
   );
 });
 
+// 设置入口
+document.getElementById('openOptions').addEventListener('click', () => {
+  chrome.runtime.openOptionsPage();
+});
+
 // 监听 background.js 的录制被拒通知，清除过期的"录制中"标记
 chrome.runtime.onMessage.addListener((request) => {
   if (request.action === 'recording_rejected' && request.streamUrl) {
