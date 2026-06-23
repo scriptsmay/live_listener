@@ -1,9 +1,9 @@
 // core/danmaku-session.js
 // 弹幕会话管理、批量发送、录制状态轮询
 //
-// 注意：本模块不在 Background 中维护任何秒级定时器。
 // 弹幕聚合由 content.js（网页端，不会休眠）完成，
 // Background 仅做无状态的"收到即转发"，规避 SW 休眠问题。
+// 缓冲模式下的录制状态重试由 chrome.alarms 驱动（最小周期 1 分钟）。
 
 import { getState } from './state.js';
 import { getConfig, DANMAKU_BATCH_API_PATH } from './config.js';
@@ -11,6 +11,43 @@ import { fetchJson } from '../lib/http.js';
 import { normalizeDanmakuBatch, filterDanmakuEvents } from '../danmaku/parser.js';
 
 export const DANMAKU_MAX_BUFFER_SIZE = 5000; // 缓冲区最大事件数（防止内存泄漏）
+
+const RETRY_ALARM_NAME = 'danmakuRetry';
+
+// ===== 缓冲模式重试 alarm 生命周期 =====
+
+/** 确保重试 alarm 存在（有缓冲会话时调用） */
+function ensureDanmakuRetryAlarm() {
+  chrome.alarms.get(RETRY_ALARM_NAME, (existing) => {
+    if (!existing) {
+      chrome.alarms.create(RETRY_ALARM_NAME, { periodInMinutes: 1 });
+      console.log('[Danmaku] 已创建缓冲模式重试 alarm（1 分钟周期）');
+    }
+  });
+}
+
+/** 无缓冲会话时清除 alarm，避免空转 */
+export function clearDanmakuRetryAlarmIfIdle() {
+  const state = getState();
+  const hasBuffering = [...state.danmakuSessions.values()].some(
+    (s) => !s.isSending && !s.stopping
+  );
+  if (!hasBuffering) {
+    chrome.alarms.clear(RETRY_ALARM_NAME);
+  }
+}
+
+// 注册 alarm 监听器（模块加载时立即生效）
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (alarm.name !== RETRY_ALARM_NAME) return;
+  const state = getState();
+  for (const [roomUrl, session] of state.danmakuSessions) {
+    if (!session.isSending && !session.stopping) {
+      checkRecordingAndUpdateSession(roomUrl).catch(() => {});
+    }
+  }
+  clearDanmakuRetryAlarmIfIdle();
+});
 
 // ===== 标签页管理 =====
 
@@ -78,6 +115,7 @@ export function startDanmakuSession(roomUrl, sessionStartMs, tabId, url, title) 
   });
   state.danmakuBatchBuffer.set(roomUrl, []);
   console.log(`[Danmaku] 采集会话已创建（等待录制）: ${roomUrl}`);
+  ensureDanmakuRetryAlarm();
 }
 
 /**
@@ -114,6 +152,7 @@ export async function stopDanmakuSession(roomUrl, forceFlush = false) {
   // 若无活跃发送会话，自动关闭弹幕开关（延迟导入避免循环依赖）
   const { autoDisableDanmakuIfIdle } = await import('./danmaku-switch.js');
   autoDisableDanmakuIfIdle();
+  clearDanmakuRetryAlarmIfIdle();
 }
 
 // ===== 弹幕发送 =====
@@ -197,6 +236,8 @@ export async function checkRecordingAndUpdateSession(roomUrl) {
   if (isRecording && !session.isSending) {
     session.isSending = true;
     console.log(`[Danmaku] 录制中，开始发送弹幕: ${roomUrl}`);
+    await flushDanmakuBatch(roomUrl).catch(() => {});
+    clearDanmakuRetryAlarmIfIdle();
   } else if (!isRecording && session.isSending) {
     console.log(`[Danmaku] 录制已结束，停止发送弹幕: ${roomUrl}`);
     await flushDanmakuBatch(roomUrl).catch(() => {});
@@ -269,14 +310,6 @@ export async function handleDanmakuBatch(roomUrl, events, sessionStartMs, tabId,
 
   // 收到即转发：立即尝试 flush（无状态，不依赖定时器）
   flushDanmakuBatch(roomUrl).catch(() => {});
-
-  // 缓冲模式下周期性检查录制状态（每 10 秒一次），防止首次检查失败后永远卡在等待
-  if (session && !session.isSending && !session.stopping) {
-    const now = Date.now();
-    if (now - (session.lastRecordingCheckAt || 0) >= 10000) {
-      checkRecordingAndUpdateSession(roomUrl).catch(() => {});
-    }
-  }
 }
 
 // ===== 手动重试 =====

@@ -2,6 +2,7 @@ import { getConfig } from '../core/config.js';
 import { getQualityInfo } from '../core/stream-quality.js';
 import { isEnvironmentRecording, sendRecordingRequest } from '../core/recording.js';
 import { isKuaishouLiveRoomUrl } from '../lib/url.js';
+import { ACTIONS } from '../lib/constants.js';
 
 function padTime(value) {
   return `${value}`.padStart(2, '0');
@@ -278,7 +279,7 @@ function renderDanmakuStatus() {
             guidance.textContent = '正在重试...';
             guidance.style.pointerEvents = 'none';
             chrome.runtime.sendMessage(
-              { action: 'retry_danmaku_status' },
+              { action: ACTIONS.RETRY_DANMAKU_STATUS },
               (resp) => {
                 if (resp?.activated > 0) {
                   guidance.textContent = `已恢复 ${resp.activated} 个会话`;
