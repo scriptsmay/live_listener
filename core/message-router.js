@@ -12,6 +12,7 @@ import {
   getDanmakuStatus,
   checkRecordingAndUpdateSession,
   handleDanmakuBatch,
+  retryAllBufferingSessions,
 } from './danmaku-session.js';
 import { setDanmakuEnabled } from './danmaku-switch.js';
 import { checkFollowingLivings } from './following-poll.js';
@@ -35,6 +36,17 @@ export function handleMessage(request, sender, sendResponse) {
     chrome.storage.local.set({ streams: [] }, () => {
       sendResponse({ status: 'cleared' });
     });
+    return true;
+  }
+
+  if (request.action === ACTIONS.RETRY_DANMAKU_STATUS) {
+    retryAllBufferingSessions()
+      .then((result) => {
+        sendResponse({ status: 'ok', ...result });
+      })
+      .catch((err) => {
+        sendResponse({ status: 'error', message: err.message });
+      });
     return true;
   }
 

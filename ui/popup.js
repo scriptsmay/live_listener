@@ -261,6 +261,7 @@ function renderDanmakuStatus() {
         guidanceText = '会话正在关闭中，刷新页面可重新开始采集';
       } else if (!session.isSending) {
         guidanceText = '录制尚未开始，弹幕已缓冲等待发送';
+        actionable = true;
       } else if (session.isSending && session.eventCount === 0) {
         guidanceText = '点击打开直播间检查弹幕是否正常加载';
         actionable = true;
@@ -272,7 +273,23 @@ function renderDanmakuStatus() {
           'danmaku-guidance' + (actionable ? ' actionable' : '');
         guidance.textContent = guidanceText;
 
-        if (actionable && session.roomUrl) {
+        if (actionable && !session.isSending) {
+          guidance.addEventListener('click', () => {
+            guidance.textContent = '正在重试...';
+            guidance.style.pointerEvents = 'none';
+            chrome.runtime.sendMessage(
+              { action: 'retry_danmaku_status' },
+              (resp) => {
+                if (resp?.activated > 0) {
+                  guidance.textContent = `已恢复 ${resp.activated} 个会话`;
+                } else {
+                  guidance.textContent = '重试未成功，后端可能未在录制';
+                }
+                setTimeout(renderDanmakuStatus, 2000);
+              }
+            );
+          });
+        } else if (actionable && session.roomUrl) {
           guidance.addEventListener('click', () => {
             chrome.tabs.create({ url: session.roomUrl, active: true });
           });

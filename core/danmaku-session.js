@@ -269,6 +269,36 @@ export async function handleDanmakuBatch(roomUrl, events, sessionStartMs, tabId,
 
   // 收到即转发：立即尝试 flush（无状态，不依赖定时器）
   flushDanmakuBatch(roomUrl).catch(() => {});
+
+  // 缓冲模式下周期性检查录制状态（每 10 秒一次），防止首次检查失败后永远卡在等待
+  if (session && !session.isSending && !session.stopping) {
+    const now = Date.now();
+    if (now - (session.lastRecordingCheckAt || 0) >= 10000) {
+      checkRecordingAndUpdateSession(roomUrl).catch(() => {});
+    }
+  }
+}
+
+// ===== 手动重试 =====
+
+/**
+ * 手动重试所有缓冲模式会话的录制状态检查（供 Popup 紧急恢复使用）
+ * @returns {Promise<{retried: number, activated: number}>}
+ */
+export async function retryAllBufferingSessions() {
+  const state = getState();
+  let retried = 0;
+  let activated = 0;
+  for (const [roomUrl, session] of state.danmakuSessions) {
+    if (!session.isSending && !session.stopping) {
+      retried++;
+      session.lastRecordingCheckAt = 0; // 重置时间戳，强制立即检查
+      const wasSending = session.isSending;
+      await checkRecordingAndUpdateSession(roomUrl).catch(() => {});
+      if (!wasSending && session.isSending) activated++;
+    }
+  }
+  return { retried, activated };
 }
 
 // ===== 状态查询 =====
