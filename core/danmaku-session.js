@@ -29,22 +29,18 @@ function ensureDanmakuRetryAlarm() {
 /** 无缓冲会话时清除 alarm，避免空转 */
 export function clearDanmakuRetryAlarmIfIdle() {
   const state = getState();
-  const hasBuffering = [...state.danmakuSessions.values()].some(
-    (s) => !s.isSending && !s.stopping
-  );
-  if (!hasBuffering) {
-    chrome.alarms.clear(RETRY_ALARM_NAME);
-  }
+  // 只要还有任何会话（无论是否发送中），就保留 alarm 以检测录制启停状态变化
+  if (state.danmakuSessions.size > 0) return;
+  chrome.alarms.clear(RETRY_ALARM_NAME);
 }
 
 // 注册 alarm 监听器（模块加载时立即生效）
 chrome.alarms.onAlarm.addListener((alarm) => {
   if (alarm.name !== RETRY_ALARM_NAME) return;
   const state = getState();
-  for (const [roomUrl, session] of state.danmakuSessions) {
-    if (!session.isSending && !session.stopping) {
-      checkRecordingAndUpdateSession(roomUrl).catch(() => {});
-    }
+  for (const [roomUrl] of state.danmakuSessions) {
+    // 检查所有会话：缓冲中的等待录制开始，发送中的等待录制结束
+    checkRecordingAndUpdateSession(roomUrl).catch(() => {});
   }
   clearDanmakuRetryAlarmIfIdle();
 });
