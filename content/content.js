@@ -8,6 +8,21 @@
 
 const TAG = '[Content]';
 
+// ========== 安全通信包装（避免扩展重载时报 Extension context invalidated）==========
+
+function safeSendMessage(msg) {
+  try {
+    chrome.runtime.sendMessage(msg, () => {
+      // 忽略响应，仅捕获 lastError
+      if (chrome.runtime.lastError) {
+        // 扩展上下文失效时静默忽略，不抛出
+      }
+    });
+  } catch (e) {
+    // 同步错误也静默忽略
+  }
+}
+
 // ========== 1. 视频流地址嗅探（原有功能） ==========
 
 function isLiveRoomPage() {
@@ -22,7 +37,7 @@ function sniffVideo() {
 
   const video = document.querySelector('video');
   if (video && video.currentSrc && video.currentSrc.startsWith('http')) {
-    chrome.runtime.sendMessage({
+    safeSendMessage({
       action: 'add_media',
       url: video.currentSrc,
     });
@@ -77,7 +92,7 @@ function flushDanmakuBuffer() {
   if (danmakuBuffer.length === 0) return;
 
   const batch = danmakuBuffer.splice(0);
-  chrome.runtime.sendMessage({
+  safeSendMessage({
     action: 'danmaku_batch',
     events: batch,
     sessionStartMs: danmakuSessionStartMs,
@@ -120,7 +135,7 @@ function startDanmakuCollection() {
   startFlushTimer();
 
   // 通知 background.js 弹幕采集已启动
-  chrome.runtime.sendMessage({
+  safeSendMessage({
     action: 'danmaku_ready',
     sessionStartMs: danmakuSessionStartMs,
     url: location.href,

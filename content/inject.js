@@ -12,6 +12,14 @@
   const TAG = '[KS-Danmaku]';
   const VERSION = 'v3 - protobuf decode';
 
+  // ========== 调试开关 ==========
+  const DEBUG = {
+    gift: true,           // 礼物采集详细调试
+    allPayloadTypes: true, // 打印所有 payloadType 分布
+    unknownTypeScan: true, // 对未知 payloadType 尝试提取礼物
+    giftStructureSample: 5, // 采样打印前 N 条疑似礼物消息的完整结构
+  };
+
   // 用于标识当前页面是快手直播间
   const isKuaishouLive =
     location.hostname === 'live.kuaishou.com' &&
@@ -41,11 +49,32 @@
     handlerRegistrations: 0,
     errorCount: 0,
     skippedSmall: 0,
+    // 礼物调试相关
+    giftScanAttempts: 0,
+    giftScanSuccesses: 0,
+    giftScanNoName: 0,
+    giftScanNoUser: 0,
+    // 连接调试相关
+    wsConstructorCalls: 0,
+    ksWsConnections: 0,
+    fetchCalls: 0,
+    xhrCalls: 0,
   };
 
   // [DEBUG] 记录前 N 条已解码消息的结构
   const decodedDebugLog = [];
   const MAX_DECODED_DEBUG = 8;
+
+  // [DEBUG] payloadType 分布统计
+  const payloadTypeStats = {};
+
+  // [DEBUG] 礼物提取失败样例（用于分析结构）
+  const giftFailSamples = [];
+  const MAX_GIFT_FAIL_SAMPLES = 10;
+
+  // [DEBUG] 礼物提取成功样例
+  const giftSuccessSamples = [];
+  const MAX_GIFT_SUCCESS_SAMPLES = 10;
 
   // ========== Protobuf 线格式解码器 ==========
 
@@ -243,12 +272,21 @@
     const payloadType = getVarint(decoded, 1);
     if (payloadType === undefined) return null;
 
+    // [DEBUG] 统计 payloadType 分布
+    if (DEBUG.allPayloadTypes) {
+      payloadTypeStats[payloadType] = (payloadTypeStats[payloadType] || 0) + 1;
+    }
+
     // 跳过心跳 ACK、enter room ACK、观众列表等控制/非弹幕消息
     if (payloadType === PT.HEARTBEAT_ACK || payloadType === PT.ENTER_ROOM_ACK) {
       return null;
     }
     // pt=340 是在线观众列表（包含用户名但无评论文本），跳过以避免误提取
     if (payloadType === 340) {
+      return null;
+    }
+    // pt=510 是点赞引导/高频点赞提示，不是礼物也不是评论
+    if (payloadType === 510) {
       return null;
     }
 
@@ -266,8 +304,57 @@
       return parsePbRichTextComment(payload);
     }
 
-    // 其他未知类型：暂不处理（避免从非弹幕消息中误提取）
+    // 其他未知类型：尝试扫描礼物和评论
+    if (DEBUG.unknownTypeScan) {
+      const events = tryExtractFromUnknownPayload(payload, payloadType);
+      if (events && events.length > 0) return events;
+    }
+
     return null;
+  }
+
+  /**
+   * 对未知 PayloadType 的消息尝试提取礼物和评论
+   * 用于发现新的礼物消息类型
+   */
+  function tryExtractFromUnknownPayload(payload, payloadType) {
+    const events = [];
+
+    // 先尝试直接提取（payload 本身可能是礼物/评论消息）
+    const directGift = tryExtractGift(payload, `unknown_pt_${payloadType}_direct`);
+    if (directGift) {
+      events.push(directGift);
+    }
+    const directComment = tryExtractComment(payload);
+    if (directComment) {
+      directComment.raw.payloadType = `unknown_${payloadType}`;
+      events.push(directComment);
+    }
+
+    // 扫描所有字段中的嵌套消息
+    for (const fieldNum of Object.keys(payload)) {
+      const fnNum = parseInt(fieldNum, 10);
+      const msgs = getMessages(payload, fnNum);
+      if (msgs.length === 0) continue;
+
+      for (let i = 0; i < msgs.length; i++) {
+        const msg = msgs[i];
+        const ctx = `unknown_pt_${payloadType}_f${fnNum}_${i}`;
+
+        const gift = tryExtractGift(msg, ctx);
+        if (gift) {
+          events.push(gift);
+          continue;
+        }
+        const comment = tryExtractComment(msg);
+        if (comment) {
+          comment.raw.payloadType = `unknown_${payloadType}_f${fnNum}`;
+          events.push(comment);
+        }
+      }
+    }
+
+    return events.length > 0 ? events : null;
   }
 
   /**
@@ -279,26 +366,40 @@
 
     // 优先从已知字段提取：f5 = 评论列表, f8 = 礼物列表
     const commentFeeds = getMessages(payload, 5);
-    for (const msg of commentFeeds) {
-      const comment = tryExtractComment(msg);
-      if (comment) events.push(comment);
+    for (let i = 0; i < commentFeeds.length; i++) {
+      const comment = tryExtractComment(commentFeeds[i]);
+      if (comment) {
+        comment.raw.fieldNum = 5;
+        comment.raw.index = i;
+        events.push(comment);
+      }
     }
 
     const giftFeeds = getMessages(payload, 8);
-    for (const msg of giftFeeds) {
-      const gift = tryExtractGift(msg);
+    for (let i = 0; i < giftFeeds.length; i++) {
+      const gift = tryExtractGift(giftFeeds[i], `feed_push_f8_${i}`);
       if (gift) events.push(gift);
     }
 
-    // 如果已知字段没有产出结果，回退到扫描所有字段
+    // 如果已知字段没有产出结果，回退到扫描其他字段
+    // 跳过已知非礼物字段: f5=评论, f9=观众进入
     if (events.length === 0) {
+      const skipFields = ['5', '9'];
       for (const fieldNum of Object.keys(payload)) {
+        if (skipFields.includes(fieldNum)) continue;
         const msgs = getMessages(payload, fieldNum);
         if (msgs.length === 0) continue;
-        for (const msg of msgs) {
+        for (let i = 0; i < msgs.length; i++) {
+          const msg = msgs[i];
+          const ctx = `feed_push_fallback_f${fieldNum}_${i}`;
           const comment = tryExtractComment(msg);
-          if (comment) { events.push(comment); continue; }
-          const gift = tryExtractGift(msg);
+          if (comment) {
+            comment.raw.fieldNum = parseInt(fieldNum, 10);
+            comment.raw.source = 'protobuf_fallback';
+            events.push(comment);
+            continue;
+          }
+          const gift = tryExtractGift(msg, ctx);
           if (gift) events.push(gift);
         }
       }
@@ -378,14 +479,43 @@
   }
 
   /**
-   * 尝试从嵌套消息中提取礼物事件
-   * 礼物特征：包含礼物名称 + 数量(varint) + 用户名
+   * 递归提取嵌套消息中的所有字符串和 varint
+   * 用于在 gift feed 的深层嵌套结构中查找礼物名/数量
    */
-  function tryExtractGift(msg) {
+  function deepScanFields(fields, depth, maxDepth) {
+    if (depth > maxDepth || !fields) return { strings: [], varints: [] };
+    const strings = [];
+    const varints = [];
+    for (const fn of Object.keys(fields)) {
+      const fnNum = parseInt(fn, 10);
+      const arr = fields[fn];
+      for (const entry of arr) {
+        if (entry.wireType === 2 && entry.type === 'string') {
+          strings.push({ fieldNum: fnNum, value: entry.value, depth: depth });
+        } else if (entry.wireType === 0) {
+          varints.push({ fieldNum: fnNum, value: entry.value, depth: depth });
+        } else if (entry.wireType === 2 && entry.type === 'message') {
+          const sub = deepScanFields(entry.value, depth + 1, maxDepth);
+          for (const s of sub.strings) strings.push(s);
+          for (const v of sub.varints) varints.push(v);
+        }
+      }
+    }
+    return { strings, varints };
+  }
+
+  /**
+   * 尝试从嵌套消息中提取礼物事件
+   * 快手礼物 feed 结构: f2=用户, f4=礼物ID(base64), f5=礼物详情(嵌套)
+   * 礼物名和数量可能在 f5 的深层嵌套中
+   */
+  function tryExtractGift(msg, contextLabel) {
     if (!msg) return null;
 
-    const allStrings = [];
-    const varints = [];
+    stats.giftScanAttempts++;
+
+    const topStrings = [];
+    const topVarints = [];
     const nestedMsgs = {};
 
     for (const fn of Object.keys(msg)) {
@@ -393,12 +523,52 @@
       const arr = msg[fn];
       for (const entry of arr) {
         if (entry.wireType === 2 && entry.type === 'string') {
-          allStrings.push({ fieldNum: fnNum, value: entry.value });
+          topStrings.push({ fieldNum: fnNum, value: entry.value });
         } else if (entry.wireType === 0) {
-          varints.push({ fieldNum: fnNum, value: entry.value });
+          topVarints.push({ fieldNum: fnNum, value: entry.value });
         } else if (entry.wireType === 2 && entry.type === 'message') {
           nestedMsgs[fnNum] = entry.value;
         }
+      }
+    }
+
+    // ========== 快速排除：检测明确的非礼物事件 ==========
+    // 收集所有层级中的类型标识字符串
+    const allLabels = new Set();
+    
+    // 收集顶层字符串
+    for (const s of topStrings) {
+      allLabels.add(s.value);
+    }
+    
+    // 收集所有嵌套消息中的 f3 字段（类型标识字段）
+    for (const fn of Object.keys(nestedMsgs)) {
+      const msg = nestedMsgs[fn];
+      for (const innerFn of Object.keys(msg)) {
+        const arr = msg[innerFn];
+        for (const entry of arr) {
+          if (entry.wireType === 2 && entry.type === 'message') {
+            const label = getString(entry.value, 3);
+            if (label) allLabels.add(label);
+          }
+        }
+      }
+    }
+    
+    // 如果包含这些类型标识，说明不是礼物
+    const nonGiftLabels = [
+      'audienceIntimacyState',  // 观众亲密状态
+      'fansGroup',               // 粉丝团
+      'fansClub',                // 粉丝俱乐部
+      'wealthGrade',             // 财富等级
+      'sign-in',                 // 签到
+      'signin',                  // 签到
+      'highFrequency',           // 高频点赞
+      'multiLike',               // 批量点赞
+    ];
+    for (const label of nonGiftLabels) {
+      if (allLabels.has(label)) {
+        return null;
       }
     }
 
@@ -406,6 +576,7 @@
     let userName = '';
     let userId = '';
     const userNameSet = new Set();
+    let userFieldNum = null;
     for (const fn of Object.keys(nestedMsgs)) {
       const nested = nestedMsgs[fn];
       const s1 = getString(nested, 1);
@@ -417,41 +588,183 @@
         userNameSet.add(userName);
         const s3 = getString(nested, 3);
         if (s3) userNameSet.add(s3);
+        userFieldNum = parseInt(fn, 10);
         break;
       }
     }
 
-    // 查找礼物名称：非用户名、非 URL 的短字符串
-    let giftName = '';
-    for (const s of allStrings) {
-      if (userNameSet.has(s.value)) continue;
-      if (!isRealText(s.value)) continue;
-      if (s.value.length < 50 && !giftName) {
-        giftName = s.value;
-      }
+    if (!userName && DEBUG.gift) {
+      stats.giftScanNoUser++;
     }
 
-    if (!giftName) return null;
+    // 深扫：从所有嵌套消息中提取字符串和 varint（最多 4 层）
+    const deepScan = deepScanFields(msg, 0, 4);
 
-    // 数量通常是一个小 varint (1-10000)
+    // ========== 查找礼物名 ==========
+    // 优先在深层嵌套中找"真实文本"字符串
+    let giftName = '';
+    let giftFieldNum = null;
+    let giftFieldDepth = 0;
+
+    // 判断字符串是否可能是礼物名
+    function isLikelyGiftName(s) {
+      if (!s || s.length < 2) return false;
+      if (!isRealText(s)) return false;
+      // 排除 URL (http, https, 自定义协议如 kwai://)
+      if (/^[a-z]+:\/\//i.test(s)) return false;
+      if (s.startsWith('http://') || s.startsWith('https://')) return false;
+      // 排除 JSON
+      if (s.startsWith('{') || s.startsWith('[')) return false;
+      // 排除图片路径
+      if (/\.(png|jpg|jpeg|gif|webp|svg)$/i.test(s)) return false;
+      if (s.includes('/') && (s.includes('.png') || s.includes('.jpg'))) return false;
+      // 排除域名 (包含 .com / .cn / .wsukwai 等)
+      if (/\.(com|cn|net|org|wsukwai|kuaishou)/i.test(s)) return false;
+      if (s.includes('wsukwai.com') || s.includes('kuaishou.com')) return false;
+      // 排除已知标签关键字
+      const excludePatterns = [
+        'wealthGrade', 'fansGroup', '粉丝团', 'level_label', 'fans_label',
+        'label_v2', 'sign-in', 'signin', '签到', 'dialog',
+        'audienceIntimacy', 'intimacy_', 'highFrequency', 'multiLike',
+        '去点赞', '人在点赞', '秒后关闭',
+      ];
+      const lower = s.toLowerCase();
+      for (const p of excludePatterns) {
+        if (lower.includes(p.toLowerCase())) return false;
+      }
+      // 排除纯数字
+      if (/^\d+$/.test(s)) return false;
+      // 排除纯数字+短横线组合（ID 类）
+      if (/^\d[\d-]{4,}$/.test(s)) return false;
+      // 排除 camelCase / snake_case 内部标识符（全英文且含大小写或下划线）
+      if (/^[a-z][a-zA-Z]+(_[a-zA-Z0-9]+)+$/.test(s)) return false;
+      // 排除太短的（1-2个字符且没有中文的）
+      if (s.length <= 2 && !/[\u4e00-\u9fff]/.test(s)) return false;
+      return true;
+    }
+
+    // 先扫描深层嵌套中的真实文本（排除用户名）
+    const deepRealStrings = deepScan.strings.filter(s => {
+      if (userNameSet.has(s.value)) return false;
+      return isLikelyGiftName(s.value);
+    });
+
+    if (deepRealStrings.length > 0) {
+      // 按长度排序，选最长的（通常礼物名比标签描述长）
+      deepRealStrings.sort((a, b) => b.value.length - a.value.length);
+      giftName = deepRealStrings[0].value;
+      giftFieldNum = deepRealStrings[0].fieldNum;
+      giftFieldDepth = deepRealStrings[0].depth;
+    }
+
+    // ========== 提取礼物 ID（f4 字段通常是 base64 礼物标识）==========
+    let giftId = '';
+    for (const s of topStrings) {
+      if (s.fieldNum === 4) {
+        giftId = s.value;
+        break;
+      }
+    }
+    if (!giftId && topStrings.length > 0) {
+      const firstNonUser = topStrings.find(s => !userNameSet.has(s.value));
+      if (firstNonUser) giftId = firstNonUser.value;
+    }
+
+    // ========== 查找礼物数量 ==========
+    // 优先从顶层 varint 中找
     let count = 1;
-    for (const v of varints) {
+    let countFieldNum = null;
+    let countDepth = 0;
+
+    for (const v of topVarints) {
       if (v.value >= 1 && v.value <= 10000) {
         count = v.value;
+        countFieldNum = v.fieldNum;
         break;
       }
     }
 
-    return {
+    // 如果顶层没找到，从深层嵌套的 varint 中找
+    if (!countFieldNum) {
+      // 排除值为 0 或过大的（通常是 ID），找 1-10000 范围的
+      const candidateCounts = deepScan.varints.filter(v =>
+        v.value >= 1 && v.value <= 10000
+      );
+      // 优先选择深度较深的（通常嵌套层级更深的是具体计数）
+      candidateCounts.sort((a, b) => b.depth - a.depth || a.value - b.value);
+      if (candidateCounts.length > 0) {
+        count = candidateCounts[0].value;
+        countFieldNum = candidateCounts[0].fieldNum;
+        countDepth = candidateCounts[0].depth;
+      }
+    }
+
+    // 如果还是没找到 giftName，使用 giftId 作为 fallback
+    if (!giftName && giftId) {
+      giftName = `礼物#${giftId}`;
+      giftFieldNum = 4;
+    }
+
+    if (!giftName) {
+      if (DEBUG.gift && giftFailSamples.length < MAX_GIFT_FAIL_SAMPLES) {
+        giftFailSamples.push({
+          reason: 'no_gift_name',
+          context: contextLabel || '',
+          userField: userFieldNum,
+          userName: userName,
+          topStrings: topStrings.map(s => ({ f: s.fieldNum, v: s.value.slice(0, 40) })),
+          topVarints: topVarints.map(v => ({ f: v.fieldNum, v: v.value })),
+          deepStrings: deepScan.strings.slice(0, 10).map(s => ({ f: s.fieldNum, d: s.depth, v: s.value.slice(0, 40) })),
+          deepVarints: deepScan.varints.slice(0, 10).map(v => ({ f: v.fieldNum, d: v.depth, v: v.value })),
+          nestedCount: Object.keys(nestedMsgs).length,
+          structure: summarizeDecoded(msg, 0),
+        });
+      }
+      stats.giftScanNoName++;
+      return null;
+    }
+
+    const result = {
       type: 'gift',
       ts_ms: Date.now(),
       user: userName || '未知',
       userId: userId || '',
       giftName: giftName,
-      giftId: '',
+      giftId: giftId,
       count: count,
-      raw: { source: 'protobuf' },
+      raw: {
+        source: 'protobuf',
+        context: contextLabel || '',
+        giftFieldNum: giftFieldNum,
+        giftFieldDepth: giftFieldDepth,
+        userFieldNum: userFieldNum,
+        countFieldNum: countFieldNum,
+        countDepth: countDepth,
+      },
     };
+
+    stats.giftScanSuccesses++;
+    if (DEBUG.gift && giftSuccessSamples.length < MAX_GIFT_SUCCESS_SAMPLES) {
+      giftSuccessSamples.push({
+        context: contextLabel || '',
+        giftName: giftName,
+        giftField: giftFieldNum,
+        giftDepth: giftFieldDepth,
+        giftId: giftId,
+        user: userName,
+        userField: userFieldNum,
+        count: count,
+        countField: countFieldNum,
+        countDepth: countDepth,
+        allDeepStrings: deepScan.strings.slice(0, 15).map(s => ({
+          f: s.fieldNum, d: s.depth, v: s.value.slice(0, 50),
+          isLikely: isLikelyGiftName(s.value),
+        })),
+        structure: summarizeDecoded(msg, 0),
+      });
+    }
+
+    return result;
   }
 
   /**
@@ -671,19 +984,26 @@
   // ========== 构造函数 Patch（用于追踪实例和调试）==========
 
   function PatchedWebSocket(url, protocols) {
+    stats.wsConstructorCalls++;
+
     const ws = protocols !== undefined
       ? new OriginalWebSocket(url, protocols)
       : new OriginalWebSocket(url);
 
-    // 只追踪快手相关的 WebSocket
+    // 判断是否快手相关
     const isKsWs =
       typeof url === 'string' &&
-      (url.includes('kuaishou') || url.includes('kwai') || url.includes('yximgs'));
+      (url.includes('kuaishou') || url.includes('kwai') || url.includes('yximgs') || url.includes('live'));
+
+    const urlPreview = typeof url === 'string' ? url.slice(0, 120) : String(url);
 
     if (isKsWs) {
+      stats.ksWsConnections++;
       trackedInstances.add(ws);
-      console.log(TAG, '检测到快手 WebSocket 连接:', url.slice(0, 80));
-      console.log(TAG, `  binaryType=${ws.binaryType}, readyState=${ws.readyState}`);
+      console.log(TAG, `[WS-Constructor] 快手 WebSocket #${stats.ksWsConnections}: ${urlPreview}`);
+      console.log(TAG, `  binaryType=${ws.binaryType}, readyState=${ws.readyState}, protocols=${ws.protocol || '(none)'}`);
+    } else {
+      console.log(TAG, `[WS-Constructor] 非快手 WebSocket #${stats.wsConstructorCalls}: ${urlPreview}`);
     }
 
     return ws;
@@ -698,6 +1018,84 @@
   // 替换全局 WebSocket
   window.WebSocket = PatchedWebSocket;
   console.log(TAG, 'WebSocket 构造函数已替换，原型级 hook 已就绪');
+
+  // ========== Fetch / XHR 拦截（排查是否改用 HTTP 方式传弹幕）==========
+
+  const originalFetch = window.fetch;
+  window.fetch = function (input, init) {
+    stats.fetchCalls++;
+    const url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+    // 只打印疑似弹幕相关的请求
+    if (url && (url.includes('danmu') || url.includes('danmaku') || url.includes('feed') ||
+                url.includes('comment') || url.includes('live') || url.includes('gift') ||
+                url.includes('kuaishou') || url.includes('kwai'))) {
+      console.log(TAG, `[Fetch] #${stats.fetchCalls}: ${url.slice(0, 120)}`, init ? init.method || 'GET' : 'GET');
+    }
+    return originalFetch.apply(this, arguments);
+  };
+
+  const originalXHROpen = XMLHttpRequest.prototype.open;
+  XMLHttpRequest.prototype.open = function (method, url) {
+    stats.xhrCalls++;
+    if (url && (url.includes('danmu') || url.includes('danmaku') || url.includes('feed') ||
+                url.includes('comment') || url.includes('live') || url.includes('gift') ||
+                url.includes('kuaishou') || url.includes('kwai'))) {
+      console.log(TAG, `[XHR] #${stats.xhrCalls}: ${method} ${url.slice(0, 120)}`);
+    }
+    return originalXHROpen.apply(this, arguments);
+  };
+
+  // ========== SSE (EventSource) 拦截 ==========
+  if (window.EventSource) {
+    const OriginalEventSource = window.EventSource;
+    let sseCount = 0;
+
+    function PatchedEventSource(url, configuration) {
+      sseCount++;
+      console.log(TAG, `[SSE] EventSource #${sseCount}: ${url.slice(0, 120)}`);
+      const es = new OriginalEventSource(url, configuration);
+
+      // 拦截 onmessage
+      const origOnMsgDesc = Object.getOwnPropertyDescriptor(OriginalEventSource.prototype, 'onmessage');
+      if (origOnMsgDesc && origOnMsgDesc.get) {
+        // 尝试读取原型上的 onmessage
+      }
+
+      // 拦截 addEventListener
+      const origAddListener = es.addEventListener;
+      es.addEventListener = function (type, listener, options) {
+        console.log(TAG, `[SSE] addEventListener('${type}') on #${sseCount}`);
+        const wrapped = function (event) {
+          console.log(TAG, `[SSE] 收到事件 type=${event.type}, data=`,
+            event.data ? (typeof event.data === 'string' ? event.data.slice(0, 200) : event.data) : '(no data)');
+          listener.call(this, event);
+        };
+        return origAddListener.call(this, type, wrapped, options);
+      };
+
+      return es;
+    }
+
+    // 拷贝静态属性
+    PatchedEventSource.CONNECTING = OriginalEventSource.CONNECTING;
+    PatchedEventSource.OPEN = OriginalEventSource.OPEN;
+    PatchedEventSource.CLOSED = OriginalEventSource.CLOSED;
+
+    window.EventSource = PatchedEventSource;
+    console.log(TAG, 'EventSource (SSE) 构造函数已替换');
+  } else {
+    console.log(TAG, '当前浏览器不支持 EventSource');
+  }
+
+  // ========== 注入时机检测 ==========
+  console.log(TAG, `注入时机: readyState=${document.readyState}, URL=${location.href}`);
+  console.log(TAG, `当前时间: ${new Date().toISOString()}`);
+  if (performance && performance.timing) {
+    const t = performance.timing;
+    if (t.navigationStart) {
+      console.log(TAG, `距 navigationStart: ${performance.now().toFixed(0)}ms`);
+    }
+  }
 
   // ========== 消息解析函数 ==========
 
@@ -850,6 +1248,80 @@
       console.log(TAG, '已解码消息结构:');
       for (const d of decodedDebugLog) {
         console.log(TAG, `  #${d.n} size=${d.size} pt=${d.payloadType} → ${d.summary}`);
+      }
+    }
+
+    // [DEBUG] 连接统计
+    console.log(TAG,
+      `连接统计: WS构造调用=${stats.wsConstructorCalls}, 快手WS=${stats.ksWsConnections}, ` +
+      `fetch调用=${stats.fetchCalls}, XHR调用=${stats.xhrCalls}`
+    );
+
+    // [DEBUG] payloadType 分布
+    if (DEBUG.allPayloadTypes) {
+      const pts = Object.entries(payloadTypeStats)
+        .sort((a, b) => b[1] - a[1])
+        .map(([pt, count]) => `pt${pt}=${count}`)
+        .join(', ');
+      console.log(TAG, `PayloadType 分布: ${pts || '(无)'}`);
+    }
+
+    // [DEBUG] 礼物采集调试信息
+    if (DEBUG.gift) {
+      console.log(TAG,
+        `礼物调试: 扫描尝试=${stats.giftScanAttempts}, 成功=${stats.giftScanSuccesses}, ` +
+        `无礼物名=${stats.giftScanNoName}, 无用户=${stats.giftScanNoUser}`
+      );
+      if (giftSuccessSamples.length > 0) {
+        console.log(TAG, `礼物成功样例 (${giftSuccessSamples.length}):`);
+        for (let i = 0; i < giftSuccessSamples.length; i++) {
+          const s = giftSuccessSamples[i];
+          const parts = [`  [${i}] ctx=${s.context}`];
+          parts.push(`礼物="${s.giftName}"(f${s.giftField}${s.giftDepth ? ` d${s.giftDepth}` : ''})`);
+          if (s.giftId) parts.push(`礼物ID="${s.giftId}"`);
+          parts.push(`用户="${s.user}"(f${s.userField})`);
+          parts.push(`数量=${s.count}(f${s.countField}${s.countDepth ? ` d${s.countDepth}` : ''})`);
+          console.log(TAG, parts.join(', '));
+          if (s.allDeepStrings && s.allDeepStrings.length > 0) {
+            console.log(TAG, `    所有深层字符串候选:`);
+            for (const str of s.allDeepStrings) {
+              const mark = str.isLikely ? '✅' : '❌';
+              console.log(TAG, `      ${mark} f${str.f} d${str.d}: "${str.v}"`);
+            }
+          }
+          console.log(TAG, `    结构: ${s.structure}`);
+        }
+      }
+      if (giftFailSamples.length > 0) {
+        console.log(TAG, `礼物失败样例 (${giftFailSamples.length}):`);
+        for (let i = 0; i < giftFailSamples.length; i++) {
+          const s = giftFailSamples[i];
+          console.log(TAG,
+            `  [${i}] ctx=${s.context}, reason=${s.reason}, ` +
+            `用户="${s.userName}"(f${s.userField}), ` +
+            `顶层字符串=${s.topStrings ? s.topStrings.length : 0}, ` +
+            `顶层varint=${s.topVarints ? s.topVarints.length : 0}, ` +
+            `深层字符串=${s.deepStrings ? s.deepStrings.length : 0}, ` +
+            `深层varint=${s.deepVarints ? s.deepVarints.length : 0}, ` +
+            `嵌套=${s.nestedCount}`
+          );
+          if (s.topStrings && s.topStrings.length > 0) {
+            console.log(TAG, `    顶层字符串:`);
+            for (const str of s.topStrings.slice(0, 10)) {
+              console.log(TAG, `      f${str.f}: "${str.v}"`);
+            }
+          }
+          if (s.deepStrings && s.deepStrings.length > 0) {
+            console.log(TAG, `    深层字符串(前10):`);
+            for (const str of s.deepStrings.slice(0, 10)) {
+              console.log(TAG, `      f${str.f} d${str.d}: "${str.v}"`);
+            }
+          }
+          if (s.deepVarints && s.deepVarints.length > 0) {
+            console.log(TAG, `    深层Varint(前10): ${s.deepVarints.map(v => `f${v.f}d${v.d}=${v.v}`).join(', ')}`);
+          }
+          console.log(TAG, `    结构: ${s.structure}`);
+        }
       }
     }
   }, 15000);
