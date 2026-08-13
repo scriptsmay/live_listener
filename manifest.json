@@ -2,12 +2,18 @@
   "manifest_version": 3,
   "name": "Live Stream Sniffer",
   "version": "1.0.3",
-  "permissions": ["webRequest", "storage", "alarms", "notifications"],
+  "permissions": [
+    "webRequest",
+    "storage",
+    "alarms",
+    "notifications"
+  ],
   "host_permissions": [
     "*://*.kuaishou.com/*",
     "*://*.yximgs.com/*",
     "http://localhost:*/*",
-    "http://192.168.31.247:*/*"
+    "http://192.168.31.247:*/*",
+    "http://192.168.31.10:*/*"
   ],
   "background": {
     "service_worker": "background.js",
@@ -15,15 +21,23 @@
   },
   "content_scripts": [
     {
-      "matches": ["*://live.kuaishou.com/*"],
-      "js": ["content/content.js"],
+      "matches": [
+        "*://live.kuaishou.com/*"
+      ],
+      "js": [
+        "content/content.js"
+      ],
       "run_at": "document_start"
     }
   ],
   "web_accessible_resources": [
     {
-      "resources": ["content/inject.js"],
-      "matches": ["*://live.kuaishou.com/*"]
+      "resources": [
+        "content/inject.js"
+      ],
+      "matches": [
+        "*://live.kuaishou.com/*"
+      ]
     }
   ],
   "options_page": "ui/options.html",
@@ -32,7 +46,6 @@
     "48": "icon.png",
     "128": "icon.png"
   },
-
   "action": {
     "default_popup": "ui/popup.html",
     "default_icon": {

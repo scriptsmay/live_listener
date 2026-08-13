@@ -156,7 +156,7 @@ function stopDanmakuCollection() {
   flushDanmakuBuffer(); // 刷新剩余缓冲
 
   // 通知 background.js 弹幕采集结束
-  chrome.runtime.sendMessage({
+  safeSendMessage({
     action: 'danmaku_stop',
     url: location.href,
   });
@@ -202,10 +202,13 @@ chrome.runtime.onMessage.addListener((request) => {
 });
 
 // 页面卸载时刷新剩余缓冲
+// 注意：必须用 safeSendMessage 而非裸 chrome.runtime.sendMessage，
+// 否则扩展重载后旧页面残留的 content script 上下文已失效，
+// 裸调用会同步抛 "Extension context invalidated"。
 window.addEventListener('beforeunload', () => {
   if (danmakuActive) {
     flushDanmakuBuffer();
-    chrome.runtime.sendMessage({
+    safeSendMessage({
       action: 'danmaku_stop',
       url: location.href,
     });

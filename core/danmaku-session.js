@@ -9,6 +9,11 @@ import { getState } from './state.js';
 import { getConfig, DANMAKU_BATCH_API_PATH } from './config.js';
 import { fetchJson } from '../lib/http.js';
 import { normalizeDanmakuBatch, filterDanmakuEvents } from '../danmaku/parser.js';
+// 注意：MV3 Service Worker 禁止动态 import()，这里必须用静态导入。
+// 与 recording.js 构成 ESM 循环依赖，但双方只在运行时事件回调里互相调用，
+// 模块初始化阶段不触发，函数声明会被提升，因此运行时安全。
+import { isEnvironmentRecording } from './recording.js';
+import { autoDisableDanmakuIfIdle } from './danmaku-switch.js';
 
 export const DANMAKU_MAX_BUFFER_SIZE = 5000; // 缓冲区最大事件数（防止内存泄漏）
 
@@ -133,9 +138,17 @@ export async function stopDanmakuSession(roomUrl, forceFlush = false) {
     const remaining = buffer ? buffer.splice(0) : [];
     session.eventCount += remaining.length;
 
-    if (forceFlush && session.isSending && remaining.length > 0) {
+    // forceFlush 时无论 isSending 状态如何都尝试发送缓冲区，
+    // 避免页面刷新/卸载时因 isSending=false 丢弃已采集的弹幕数据。
+    if (forceFlush && remaining.length > 0) {
       buffer.push(...remaining);
-      await flushDanmakuBatch(roomUrl).catch(() => {});
+      // 临时开启发送以绕过 flushDanmakuBatch 的 isSending 门控
+      const wasSending = session.isSending;
+      session.isSending = true;
+      await flushDanmakuBatch(roomUrl).catch((err) => {
+        console.warn('[Danmaku] forceFlush 发送失败:', err.message);
+      });
+      session.isSending = wasSending;
     }
 
     state.danmakuSessions.delete(roomUrl);
@@ -145,8 +158,7 @@ export async function stopDanmakuSession(roomUrl, forceFlush = false) {
     state.danmakuBatchBuffer.delete(roomUrl);
   }
 
-  // 若无活跃发送会话，自动关闭弹幕开关（延迟导入避免循环依赖）
-  const { autoDisableDanmakuIfIdle } = await import('./danmaku-switch.js');
+  // 若无活跃发送会话，自动关闭弹幕开关
   autoDisableDanmakuIfIdle();
   clearDanmakuRetryAlarmIfIdle();
 }
@@ -176,12 +188,18 @@ export async function flushDanmakuBatch(roomUrl) {
   if (filtered.length === 0) return;
 
   // 发送到所有启用环境的后端
+  //
+  // 只要有任意一个环境判定为"应保留缓冲"（后端无活跃录制会话 / 网络失败），
+  // 就把本批事件放回缓冲区头部，避免静默丢数据。
+  // 背景：events 在上面已被 splice 取空，若此处不回填，
+  // 后端返回 no_active_session（历史上还是 HTTP 200）时弹幕会凭空消失。
+  let shouldRequeue = false;
   try {
     const config = await getConfig();
     for (const env of config.environments) {
       if (!env.enabled) continue;
       try {
-        await fetchJson(
+        const result = await fetchJson(
           env.danmakuBatchApiUrl || `${env.baseUrl}${DANMAKU_BATCH_API_PATH}`,
           {
             method: 'POST',
@@ -194,12 +212,43 @@ export async function flushDanmakuBatch(roomUrl) {
             }),
           }
         );
+        // 后端无活跃录制会话：数据未落盘，必须保留缓冲等待录制启动后重发。
+        // 兼容新旧后端：新版返回 HTTP 409，旧版返回 HTTP 200 + error 字段。
+        if (result.data?.error === 'no_active_session' || result.status === 409) {
+          shouldRequeue = true;
+          console.warn(
+            `[Danmaku] ${env.name} 后端无活跃录制会话，${filtered.length} 条弹幕保留缓冲等待重发: ${roomUrl}`
+          );
+        } else if (!result.ok) {
+          shouldRequeue = true;
+          console.warn(
+            `[Danmaku] ${env.name} 批量发送返回 HTTP ${result.status}，保留缓冲待重试`
+          );
+        }
       } catch (err) {
+        shouldRequeue = true;
         console.warn(`[Danmaku] 批量发送到 ${env.name} 失败:`, err.message);
       }
     }
   } catch (err) {
+    shouldRequeue = true;
     console.warn('[Danmaku] 批量发送失败:', err.message);
+  }
+
+  if (shouldRequeue) {
+    // 回填到缓冲区头部，保持时间顺序；eventCount 是"已采集"计数，需扣回避免重复累计
+    buffer.unshift(...events);
+    session.eventCount -= events.length;
+    trimDanmakuBuffer(buffer);
+  }
+}
+
+/** 缓冲区溢出时丢弃最早事件，防止长时间不录制导致内存泄漏 */
+function trimDanmakuBuffer(buffer) {
+  if (buffer.length > DANMAKU_MAX_BUFFER_SIZE) {
+    const dropped = buffer.length - DANMAKU_MAX_BUFFER_SIZE;
+    buffer.splice(0, dropped);
+    console.warn(`[Danmaku] 缓冲区超过 ${DANMAKU_MAX_BUFFER_SIZE}，丢弃最早 ${dropped} 条`);
   }
 }
 
@@ -217,16 +266,26 @@ export async function checkRecordingAndUpdateSession(roomUrl) {
   session.lastRecordingCheckAt = Date.now();
 
   const config = await getConfig();
-  const { isEnvironmentRecording } = await import('./recording.js');
   let isRecording = false;
+  let checkedEnvCount = 0;
   for (const env of config.environments) {
     if (!env.enabled) continue;
+    checkedEnvCount++;
     try {
       if (await isEnvironmentRecording(env, roomUrl)) {
         isRecording = true;
         break;
       }
-    } catch (_) {}
+    } catch (err) {
+      // 不要静默吞掉：网络/权限/超时失败会让 isSending 永远上不来
+      console.warn(
+        `[Danmaku] 录制状态查询失败 [${env.name}] ${env.statusApiUrl}?url=${roomUrl}:`,
+        err.message
+      );
+    }
+  }
+  if (checkedEnvCount === 0) {
+    console.warn('[Danmaku] 没有已启用的环境，无法查询录制状态，弹幕将持续缓冲');
   }
 
   if (isRecording && !session.isSending) {
@@ -283,7 +342,9 @@ export async function handleDanmakuBatch(roomUrl, events, sessionStartMs, tabId,
   // 如果会话不存在，自动创建
   if (!state.danmakuSessions.has(roomUrl)) {
     startDanmakuSession(roomUrl, sessionStartMs || Date.now(), tabId, roomUrl, title || '');
-    checkRecordingAndUpdateSession(roomUrl).catch(() => {});
+    checkRecordingAndUpdateSession(roomUrl).catch((err) => {
+      console.warn('[Danmaku] handleDanmakuBatch 首次状态检查失败:', err.message);
+    });
   }
 
   const session = state.danmakuSessions.get(roomUrl);
@@ -294,14 +355,7 @@ export async function handleDanmakuBatch(roomUrl, events, sessionStartMs, tabId,
 
   if (buffer && Array.isArray(events)) {
     buffer.push(...events);
-    // 防止缓冲区无限增长：超出上限时丢弃最早的事件
-    if (buffer.length > DANMAKU_MAX_BUFFER_SIZE) {
-      const dropped = buffer.length - DANMAKU_MAX_BUFFER_SIZE;
-      buffer.splice(0, dropped);
-      console.warn(
-        `[Danmaku] 缓冲区溢出，丢弃 ${dropped} 条早期事件: ${roomUrl}`
-      );
-    }
+    trimDanmakuBuffer(buffer);
   }
 
   // 收到即转发：立即尝试 flush（无状态，不依赖定时器）

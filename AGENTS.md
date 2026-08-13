@@ -104,7 +104,11 @@ ui/                            # 用户界面
 - 缓冲区上限 5000 条事件，超出丢弃最早事件（防止长时间不录制时内存泄漏）
 - `stopDanmakuSession(roomUrl, forceFlush)` 使用 `stopping` 标记 + 同步 drain 防止竞态
 
-**循环依赖处理**：`danmaku-session.js` 与 `danmaku-switch.js`、`recording.js` 之间存在互调关系。通过在 `danmaku-session.js` 中使用动态 `import()` 延迟加载来打破循环。
+**循环依赖处理**：`danmaku-session.js` 与 `recording.js` 之间存在互调关系，全部使用**静态顶层 import**。
+
+> ⚠️ **禁止在 Service Worker 模块图中使用动态 `import()`**：MV3 明确禁止（`import() is disallowed on ServiceWorkerGlobalScope by the HTML specification`），调用时会抛错。如果该 `import()` 位于 `try/catch` 内且 catch 为空，故障会被完全静默——曾导致 `checkRecordingAndUpdateSession()` 里 `isEnvironmentRecording` 永远加载失败，`isSending` 永远为 false，弹幕只缓冲不发送。
+>
+> ESM 静态循环导入在此处是安全的：互相引用的函数只在运行时事件回调里调用，模块求值阶段不触发。
 
 ## Testing
 

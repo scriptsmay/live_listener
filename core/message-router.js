@@ -16,7 +16,7 @@ import {
 } from './danmaku-session.js';
 import { setDanmakuEnabled } from './danmaku-switch.js';
 import { checkFollowingLivings } from './following-poll.js';
-import { isKuaishouLiveRoomUrl } from '../lib/url.js';
+import { isKuaishouLiveRoomUrl, normalizeRoomUrl } from '../lib/url.js';
 
 export function handleMessage(request, sender, sendResponse) {
   // ===== 来自 popup.js 的消息 =====
@@ -86,14 +86,15 @@ export function handleMessage(request, sender, sendResponse) {
   if (action === ACTIONS.ADD_MEDIA) {
     const tab = sender.tab;
     if (!tab || !tab.title) return;
-    if (!isKuaishouLiveRoomUrl(tab.url)) return true;
-    handleContentStream({ url: request.url, title: tab.title, roomUrl: tab.url });
+    const roomUrl = normalizeRoomUrl(tab.url);
+    if (!isKuaishouLiveRoomUrl(roomUrl)) return true;
+    handleContentStream({ url: request.url, title: tab.title, roomUrl });
     return true;
   }
 
   if (action === ACTIONS.DANMAKU_READY) {
     const tab = sender.tab;
-    const roomUrl = tab?.url || '';
+    const roomUrl = normalizeRoomUrl(tab?.url || '');
     if (!isKuaishouLiveRoomUrl(roomUrl)) return;
     startDanmakuSession(
       roomUrl,
@@ -102,13 +103,15 @@ export function handleMessage(request, sender, sendResponse) {
       request.url || roomUrl,
       request.title || tab.title || ''
     );
-    checkRecordingAndUpdateSession(roomUrl).catch(() => {});
+    checkRecordingAndUpdateSession(roomUrl).catch((err) => {
+      console.warn('[Danmaku] danmaku_ready 录制状态检查失败:', err.message);
+    });
     return;
   }
 
   if (action === ACTIONS.DANMAKU_BATCH) {
     const tab = sender.tab;
-    const roomUrl = tab?.url || '';
+    const roomUrl = normalizeRoomUrl(tab?.url || '');
     if (!isKuaishouLiveRoomUrl(roomUrl)) return;
     handleDanmakuBatch(
       roomUrl,
@@ -121,7 +124,7 @@ export function handleMessage(request, sender, sendResponse) {
   }
 
   if (action === ACTIONS.DANMAKU_STOP) {
-    const roomUrl = request.url || sender.tab?.url || '';
+    const roomUrl = normalizeRoomUrl(request.url || sender.tab?.url || '');
     if (roomUrl) stopDanmakuSession(roomUrl, true).catch(() => {});
     return;
   }

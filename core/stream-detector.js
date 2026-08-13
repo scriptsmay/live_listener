@@ -7,7 +7,7 @@ import { getState, atomicAppendStream } from './state.js';
 import { emit, EVENTS } from './event-bus.js';
 import { getConfig } from './config.js';
 import { getQualityWeight } from './stream-quality.js';
-import { isKuaishouLiveRoomUrl, getLiveRoomUrlFromRequest } from '../lib/url.js';
+import { isKuaishouLiveRoomUrl, getLiveRoomUrlFromRequest, normalizeRoomUrl } from '../lib/url.js';
 
 /**
  * webRequest onBeforeRequest 入口
@@ -38,7 +38,8 @@ export async function handleWebRequest(details) {
   });
   if (!tab) return;
 
-  const roomUrl = getLiveRoomUrlFromRequest(details, tab) || '';
+  // 归一化后作为房间唯一标识，与后端 rooms.room_url 保持一致
+  const roomUrl = normalizeRoomUrl(getLiveRoomUrlFromRequest(details, tab) || '');
   if (!isKuaishouLiveRoomUrl(roomUrl)) return;
 
   state.lastUrl = details.url;
