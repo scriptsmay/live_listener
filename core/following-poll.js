@@ -189,13 +189,23 @@ export async function checkFollowingLivings() {
 
 /**
  * 初始化 chrome.alarms 定时器
- * 注册 onInstalled 和 onAlarm 监听器
+ *
+ * 关键点：alarm.create 必须在每次 SW 启动时无条件执行一次，而不能只放在
+ * onInstalled 回调里。原因：onInstalled 仅在首次安装/扩展更新/Chrome 升级
+ * 时触发，如果 alarm 因任何原因（用户清缓存、扩展被禁用再启用、SW 异常等）
+ * 丢失后不会自愈。alarms.create 对同名 alarm 是幂等的，重复调用安全。
+ *
+ * 另：onInstalled 首次跑一次 checkFollowingLivings()，避免刚装完等 1 分钟
+ * 才看到首屏数据。
  */
 export function initAlarms() {
+  // 每次 SW 启动都重建 alarm（根因修复：解决 alarm 静默丢失导致停止轮询）
+  chrome.alarms.create('pollFollowingLivings', {
+    periodInMinutes: POLL_INTERVAL_MINUTES,
+  });
+
   chrome.runtime.onInstalled.addListener(() => {
-    chrome.alarms.create('pollFollowingLivings', {
-      periodInMinutes: POLL_INTERVAL_MINUTES,
-    });
+    // 首次安装/更新时立即跑一次，不用等下一分钟
     checkFollowingLivings();
   });
 

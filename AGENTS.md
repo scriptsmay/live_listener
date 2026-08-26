@@ -85,6 +85,7 @@ ui/                            # 用户界面
   - Author list is per-environment (`followedAuthors`).
 - `getConfig()` returns `{ environments: [...], followedAuthors: [...] }`.
 - **MV3 Service Worker 生命周期**：所有关键状态必须视为可丢失状态。SW 空闲 ~30s 后可能被销毁，重启时内存变量全部重置。`setInterval` 不可靠，必须用 `chrome.alarms` 替代（`core/following-poll.js`）。`Map`/`Set` 不可靠——必须确保关键状态已持久化且 `restoreState()` 能完整重建。
+- **MV3 alarm 必须每次 SW 启动重建**：`chrome.alarms.create()` 必须在 `initAlarms()` 顶层无条件执行，不能仅放在 `chrome.runtime.onInstalled` 回调里。`onInstalled` 只在首次安装/更新/Chrome 升级时触发，alarm 因任何边界条件（清缓存、扩展被禁用再启用、SW 异常）丢失后不会自愈，表现为"开关正常但不再轮询"的不可见故障。`chrome.alarms.create` 对同名 alarm 是幂等的，重复调用安全。详见 `decisions/adr-002-mv3-alarm-self-healing.md`（知识库镜像路径 `01-Projects/01-Active/chrome-live-listener/decisions/adr-002-mv3-alarm-self-healing.md`）。
 
 ## Danmaku architecture
 
