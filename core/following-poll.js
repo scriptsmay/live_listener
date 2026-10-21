@@ -52,7 +52,8 @@ async function handleStreamerOnline(
   roomId,
   playUrls,
   caption = '',
-  targetEnvs
+  targetEnvs,
+  coverUrl = ''
 ) {
   const state = getState();
   const roomUrl = `https://live.kuaishou.com/u/${author.id}`;
@@ -73,9 +74,16 @@ async function handleStreamerOnline(
     console.log(
       `[FollowingPoll] ${author.name} 自动发送直播流到 ${targetEnvs
         .map((env) => env.name)
-        .join(', ')}`
+        .join(', ')}，封面: ${coverUrl || '无'}`
     );
-    sendToEnvironments(targetEnvs, flvUrl, author.name, roomUrl, caption);
+    sendToEnvironments(
+      targetEnvs,
+      flvUrl,
+      author.name,
+      roomUrl,
+      caption,
+      coverUrl
+    );
   } else {
     console.log(
       `[FollowingPoll] ${author.name} 无流地址，尝试打开直播间页面让 webRequest 捕获`
@@ -173,7 +181,8 @@ export async function checkFollowingLivings() {
           item.id,
           item.playUrls || [],
           item.caption,
-          targetEnvs
+          targetEnvs,
+          item.poster || ''
         );
       }
     }

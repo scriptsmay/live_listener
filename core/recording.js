@@ -74,7 +74,8 @@ export async function sendToEnvironments(
   url,
   title,
   roomUrl,
-  caption = ''
+  caption = '',
+  coverUrl = ''
 ) {
   let activeCount = 0;
 
@@ -101,15 +102,17 @@ export async function sendToEnvironments(
 
     // 未在录制，发送录制请求
     try {
+      const body = {
+        url,
+        title: `${title}`,
+        room_url: roomUrl,
+        caption,
+      };
+      if (coverUrl) body.cover_url = coverUrl;
       const result = await fetchJson(env.notifyApiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          url,
-          title: `${title}`,
-          room_url: roomUrl,
-          caption,
-        }),
+        body: JSON.stringify(body),
       });
       if (result.ok) {
         persistActiveRecording(roomUrl);

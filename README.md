@@ -46,7 +46,8 @@ Manifest V3 Chrome 扩展，用于监测快手直播流并推送到本地录制�
   "url": "直播流地址",
   "title": "标题或主播名",
   "room_url": "直播间地址",
-  "caption": "直播描述"
+  "caption": "直播描述",
+  "cover_url": "直播间封面地址（可选，取自关注列表 poster 字段）"
 }
 ```
 

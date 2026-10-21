@@ -76,7 +76,7 @@ ui/                            # 用户界面
   - `content/content.js` reads `<video>.currentSrc` every 3 seconds (also acts as MV3 SW keepalive). Handled via `core/message-router.js`.
 - Recording-aware polling: when recording is confirmed, sets `activeRecordingRoomUrl` via `core/state.js`; subsequent `checkFollowingLivings` ticks query backend `/status` first and skip Kuaishou API if still recording (`core/following-poll.js`).
 - Backend endpoints (configurable in settings):
-  - `POST {notifyApiUrl}` with JSON body `{ url, title, room_url, caption }` — start recording.
+  - `POST {notifyApiUrl}` with JSON body `{ url, title, room_url, caption, cover_url? }` — start recording. `cover_url` 仅在关注列表轮询链路可用：取快手 `follow/living` 返回的 `poster` 字段；其他链路（webRequest / 手动录制）不带该字段，由后端自行兜底。
   - `GET {statusApiUrl}?url={roomUrl}` — check if already recording.
   - `POST {danmakuBatchApiUrl}` with JSON body `{ room_url, events, session_start_ms, title }` — push danmaku batch.
 - `core/config.js` defines multiple environments (`production` → `:11123`, `development` → `:3001`).
