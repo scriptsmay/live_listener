@@ -68,8 +68,12 @@ export function clearDanmakuRetryAlarmIfIdle() {
 }
 
 // 注册 alarm 监听器（模块加载时立即生效）
-chrome.alarms.onAlarm.addListener((alarm) => {
+chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name !== RETRY_ALARM_NAME) return;
+  // 冷启动时 alarm 可能在 restoreState 的 storage 回调前触发：此时两个 Map
+  // 都是空的，往下走会把 alarm 清掉，等 stateRestored.then 再重建，探测最多
+  // 被推迟一分钟。先等状态恢复完成再读 Map。
+  await stateRestored;
   const state = getState();
   for (const [roomUrl] of state.danmakuSessions) {
     // 检查所有会话：缓冲中的等待录制开始，发送中的等待录制结束
@@ -153,8 +157,12 @@ function sendMessageWithTimeout(tabId, message, timeoutMs) {
 /**
  * 向标签页补发 start_danmaku（content 侧 startDanmakuCollection 幂等）。
  *
- * 不要求会话存在：恢复重载会短暂关闭弹幕开关，重载后的 content script
- * 依据 danmakuEnabled=false 不会自行启动，必须由扩展无条件补发一次。
+ * 不要求会话存在：恢复重载后 content script 会重新求值，若会话记录已丢失
+ * 它不会自行启动采集，需要由扩展补发一次。
+ *
+ * **但不是无条件的**：补发前先读取配置，`danmakuEnabled !== true` 时直接跳过。
+ * 依据是用户可能手动关掉了弹幕开关（或后端主动停采），恢复流程不得把它
+ * 重新打开；读取配置失败同样按关闭处理。返回值 false 表示未发送。
  */
 async function sendStartDanmaku(roomUrl, tabId) {
   // 尊重用户的弹幕开关：用户手动关闭后，恢复流程不得把采集重新打开。
@@ -498,23 +506,27 @@ export async function debugProbeAutoOpenedTab(roomUrl) {
  * @returns {Promise<boolean>} 是否执行了探测
  */
 export async function probeAutoOpenedTabIfRecording(roomUrl) {
+  // 与 debugProbeAutoOpenedTab / probeAutoOpenedTab 保持同一口径：调试时
+  // 粘贴带查询串的完整标签页 URL 也能命中 autoOpenedTabs 的归一化 key。
+  const normalized = normalizeRoomUrl(roomUrl || '');
+  if (!normalized) return false;
   await stateRestored;
   const state = getState();
-  if (!state.autoOpenedTabs.has(roomUrl)) return false;
-  if (state.danmakuClosing.has(roomUrl)) return false;
+  if (!state.autoOpenedTabs.has(normalized)) return false;
+  if (state.danmakuClosing.has(normalized)) return false;
 
   const config = await getConfig();
   let isRecording = false;
   for (const env of config.environments) {
     if (!env.enabled) continue;
     try {
-      if (await isEnvironmentRecording(env, roomUrl)) {
+      if (await isEnvironmentRecording(env, normalized)) {
         isRecording = true;
         break;
       }
     } catch (err) {
       console.warn(
-        `[Danmaku] 自动标签页状态查询失败 [${env.name}] ${env.statusApiUrl}?url=${roomUrl}:`,
+        `[Danmaku] 自动标签页状态查询失败 [${env.name}] ${env.statusApiUrl}?url=${normalized}:`,
         err.message
       );
     }
@@ -522,7 +534,7 @@ export async function probeAutoOpenedTabIfRecording(roomUrl) {
   // idle / 未知：不探测，避免续播窗口内误重载
   if (!isRecording) return false;
 
-  await probeAutoOpenedTab(roomUrl);
+  await probeAutoOpenedTab(normalized);
   return true;
 }
 

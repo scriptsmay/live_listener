@@ -197,10 +197,14 @@ const sel = '.live-end-container, .live-end-card, [data-testid="live-end"]';
   return { cls: el.className, w: r.width, h: r.height, opacity: getComputedStyle(el).opacity };
 });
 ```
-   - 有元素且宽高非 0、`opacity` 不为 `0` → `hasEndOverlay=true`，按下面步骤继续；
-   - **一个都不命中** → 说明选择器列表需要扩展。此时功能**退化为仅凭 video 活跃性判定**：
-     若 `hasActiveVideo` 仍为 true，该页面会被判为 healthy，不会触发恢复。请记录实际浮层的
-     类名/属性并补充到 `content/content.js` 的 `END_OVERLAY_SELECTORS`。
+   - 判定只看**宽高是否均大于 0**（即 `isElementVisible`，`content/content.js`）：
+     有元素且 `w > 0 && h > 0` → `hasEndOverlay=true`，按下面步骤继续；
+   - **一个都不命中**，或命中的元素宽高为 0（如在隐藏容器里）→ 视为没有关播浮层。此时功能
+     **退化为仅凭 video 活跃性判定**：若 `hasActiveVideo` 仍为 true，该页面会被判为 healthy，
+     不会触发恢复。请记录实际浮层的类名/属性并补充到 `content/content.js` 的
+     `END_OVERLAY_SELECTORS`；
+   - ⚠️ 实现**不检查 `opacity`/`visibility`**：`opacity: 0` 但仍有非零宽高的浮层依然会被判为
+     `hasEndOverlay=true`。上面把 `opacity` 一起打印出来只是为了记录现象，不参与判定。
 
 1. 强制让 video 判定失效（替代旧文档里不可执行的"手动构造播放结束状态"）：
    在**自动标签页**的页面 Console 中执行：
