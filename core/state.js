@@ -31,11 +31,8 @@
 //  * @property {boolean} danmakuEnabled
 //  */
 
-import { STORAGE_KEYS } from '../lib/constants.js';
+import { STORAGE_KEYS, DANMAKU_HEALTH } from '../lib/constants.js';
 import { normalizeRoomUrl } from '../lib/url.js';
-
-// 冷却时间戳超过该时长即无意义，启动时清理，避免 storage 无限累积
-const RECOVERY_RECORD_MAX_AGE_MS = 10 * 60 * 1000;
 
 // ===== 内存状态（Service Worker 重启后丢失，需从 storage 恢复） =====
 
@@ -51,17 +48,24 @@ const state = {
   activeRecordingRoomUrl: null,
 
   // 弹幕会话
-  danmakuSessions: new Map(),      // roomUrl -> session 对象
-  danmakuBatchBuffer: new Map(),   // roomUrl -> events[]
-  autoOpenedTabs: new Map(),       // roomUrl -> tabId（持久化，SW 重启后恢复）
+  danmakuSessions: new Map(), // roomUrl -> session 对象
+  danmakuBatchBuffer: new Map(), // roomUrl -> events[]
+  autoOpenedTabs: new Map(), // roomUrl -> tabId（持久化，SW 重启后恢复）
 
   // 自动标签页健康恢复（D3）
-  danmakuLastRecoveryAt: new Map(),   // roomUrl -> 最近一次重载/新建时间戳（持久化）
-  danmakuProbeFailures: new Map(),    // roomUrl -> 连续探测失败次数
-  danmakuLastProbeAt: new Map(),      // roomUrl -> 最近一次探测时间（探测节流，仅内存）
-  danmakuRecoveryInFlight: new Set(), // 正在执行恢复的房间，防止并发重复重载
-  danmakuStartInFlight: new Set(),    // 正在补发 start_danmaku 的房间，防止重试链重复
-  danmakuResumeResent: new Set(),     // `${roomUrl}|${recoveredAt}` 已补发 start_danmaku 的恢复批次
+  danmakuLastRecoveryAt: new Map(), // roomUrl -> 最近一次重载/新建时间戳（持久化）
+  // roomUrl -> { count, firstFailureAt }（持久化）
+  // MV3 SW 空闲销毁后计数不能丢，否则每次唤醒都从 1 重新累计，永远达不到阈值。
+  danmakuProbeFailures: new Map(),
+  // roomUrl -> { at, tabId }（持久化）：标记"本次页面卸载是扩展主动重载"，
+  // 用于忽略由此产生的 danmaku_stop，避免重载把弹幕采集永久关掉。
+  danmakuReloadExpected: new Map(),
+  danmakuLastProbeAt: new Map(), // roomUrl -> 最近一次探测时间（探测节流，仅内存）
+  danmakuRecoveryPromises: new Map(), // roomUrl -> 进行中的恢复 Promise（关闭时需等待）
+  danmakuClosing: new Set(), // 正在关闭自动标签页的房间，禁止新恢复启动
+  danmakuStartInFlight: new Set(), // 正在补发 start_danmaku 的房间，防止重试链重复
+  danmakuResumeResent: new Set(), // `${roomUrl}|${recoveredAt}` 已补发 start_danmaku 的恢复批次
+  danmakuCreateInFlight: new Map(), // roomUrl -> 进行中的建标签页 Promise（并发去重）
 
   // 关注轮询
   notifiedRooms: new Set(),
@@ -140,13 +144,12 @@ function serializeRecoveryAttempts() {
   return Object.fromEntries(state.danmakuLastRecoveryAt);
 }
 
-/** 将当前 autoOpenedTabs 整体写入 storage（供批量变更后调用） */
-export function persistAutoOpenedTabs() {
-  return withStorageLock(async () => {
-    await chrome.storage.local.set({
-      [STORAGE_KEYS.AUTO_OPENED_TABS]: serializeAutoOpenedTabs(),
-    });
-  });
+function serializeProbeFailures() {
+  return Object.fromEntries(state.danmakuProbeFailures);
+}
+
+function serializeReloadExpected() {
+  return Object.fromEntries(state.danmakuReloadExpected);
 }
 
 /** 原子记录一个自动打开标签页（内存 + storage 同步更新） */
@@ -197,29 +200,125 @@ export function atomicMarkDanmakuRecoveryAttempt(roomUrl, at = Date.now()) {
   });
 }
 
-/** 原子清除房间的恢复冷却记录（关闭自动标签页时调用，避免 storage 累积） */
+/**
+ * 原子清除房间的恢复状态：冷却时间戳、失败计数、重载标记与补发去重标记。
+ * 关闭自动标签页 / 恢复成功后调用，避免 storage 累积。
+ */
 export function atomicClearDanmakuRecovery(roomUrl) {
   return withStorageLock(async () => {
     state.danmakuLastRecoveryAt.delete(roomUrl);
+    state.danmakuProbeFailures.delete(roomUrl);
+    state.danmakuReloadExpected.delete(roomUrl);
     const prefix = `${roomUrl}|`;
     for (const key of state.danmakuResumeResent) {
       if (key.startsWith(prefix)) state.danmakuResumeResent.delete(key);
     }
     await chrome.storage.local.set({
       [STORAGE_KEYS.DANMAKU_LAST_RECOVERY]: serializeRecoveryAttempts(),
+      [STORAGE_KEYS.DANMAKU_PROBE_FAILURES]: serializeProbeFailures(),
+      [STORAGE_KEYS.DANMAKU_RELOAD_EXPECTED]: serializeReloadExpected(),
+    });
+  });
+}
+
+// ===== 连续探测失败计数（持久化，跨 SW 重启累计） =====
+
+/**
+ * 原子记录一次探测失败并返回累计次数。
+ * 计数与首次失败时间同时落盘：即使 SW 在下一次探测前被销毁，
+ * 下次唤醒（1 分钟 alarm）也能接着累计到阈值。
+ */
+export function atomicIncrementDanmakuProbeFailure(roomUrl, at = Date.now()) {
+  return withStorageLock(async () => {
+    const existing = state.danmakuProbeFailures.get(roomUrl);
+    const count = (existing?.count || 0) + 1;
+    state.danmakuProbeFailures.set(roomUrl, {
+      count,
+      firstFailureAt: existing?.firstFailureAt || at,
+    });
+    await chrome.storage.local.set({
+      [STORAGE_KEYS.DANMAKU_PROBE_FAILURES]: serializeProbeFailures(),
+    });
+    return count;
+  });
+}
+
+/** 原子重置房间的连续探测失败计数（健康探测或恢复完成后调用） */
+export function atomicResetDanmakuProbeFailures(roomUrl) {
+  return withStorageLock(async () => {
+    state.danmakuProbeFailures.delete(roomUrl);
+    await chrome.storage.local.set({
+      [STORAGE_KEYS.DANMAKU_PROBE_FAILURES]: serializeProbeFailures(),
+    });
+  });
+}
+
+// ===== "本次卸载由扩展发起"标记（防止恢复重载关掉弹幕采集） =====
+
+/**
+ * 原子标记房间即将由扩展主动重载/导航。
+ * 必须在 chrome.tabs.reload()/update() 之前 await：页面 unload 时 content.js
+ * 会发 danmaku_stop，message-router 依据该标记跳过会话销毁，否则重载后
+ * danmakuEnabled 已被置 false，采集再也不会启动。
+ */
+export function atomicMarkDanmakuReloadExpected(roomUrl, tabId, at = Date.now()) {
+  return withStorageLock(async () => {
+    state.danmakuReloadExpected.set(roomUrl, { at, tabId });
+    await chrome.storage.local.set({
+      [STORAGE_KEYS.DANMAKU_RELOAD_EXPECTED]: serializeReloadExpected(),
+    });
+  });
+}
+
+/** 判断房间当前是否处于"扩展主动重载"窗口内 */
+export function isDanmakuReloadExpected(roomUrl, now = Date.now()) {
+  const record = state.danmakuReloadExpected.get(roomUrl);
+  if (!record || typeof record.at !== 'number') return false;
+  return now - record.at < DANMAKU_HEALTH.RELOAD_EXPECTED_TTL_MS;
+}
+
+/**
+ * 原子消费（清除）房间的重载标记。
+ * 在重载后首次收到 danmaku_stop 时清除，确保之后用户手动离开该房间
+ * 产生的 danmaku_stop 仍能正常清理会话。
+ */
+export function atomicClearDanmakuReloadExpected(roomUrl) {
+  return withStorageLock(async () => {
+    state.danmakuReloadExpected.delete(roomUrl);
+    await chrome.storage.local.set({
+      [STORAGE_KEYS.DANMAKU_RELOAD_EXPECTED]: serializeReloadExpected(),
     });
   });
 }
 
 // ===== Service Worker 启动时恢复 =====
+//
+// background.js 在 restoreState() 完成前就已注册 onMessage，消息处理可能抢跑。
+// 若此时 autoOpenedTabs 还是空的，ensureDanmakuTab 会新建一个标签页，
+// restore 随后又把 storage 中的旧标签页恢复进来 —— 两个标签页、一个成孤儿。
+// 因此对外暴露 stateRestored，所有涉及自动标签页的函数先等它完成。
+let _resolveStateRestored;
+export const stateRestored = new Promise((resolve) => {
+  _resolveStateRestored = resolve;
+});
 
 export async function restoreState() {
+  try {
+    await restoreStateInternal();
+  } finally {
+    _resolveStateRestored();
+  }
+}
+
+async function restoreStateInternal() {
   const result = await chrome.storage.local.get([
     STORAGE_KEYS.NOTIFIED_ROOMS,
     STORAGE_KEYS.STREAMS,
     STORAGE_KEYS.ACTIVE_RECORDING_ROOM,
     STORAGE_KEYS.AUTO_OPENED_TABS,
     STORAGE_KEYS.DANMAKU_LAST_RECOVERY,
+    STORAGE_KEYS.DANMAKU_PROBE_FAILURES,
+    STORAGE_KEYS.DANMAKU_RELOAD_EXPECTED,
     'activeRecordingByEnv', // 旧版兼容迁移
   ]);
 
@@ -230,10 +329,11 @@ export async function restoreState() {
   // 不匹配或标签页已不存在则丢弃该条映射。
   const storedAutoTabs = result[STORAGE_KEYS.AUTO_OPENED_TABS];
   if (storedAutoTabs && typeof storedAutoTabs === 'object') {
-    let dirty = false;
+    const valid = [];
+    const invalid = [];
     for (const [roomUrl, tabId] of Object.entries(storedAutoTabs)) {
       if (typeof tabId !== 'number') {
-        dirty = true;
+        invalid.push([roomUrl, tabId]);
         continue;
       }
       let matches = false;
@@ -244,42 +344,113 @@ export async function restoreState() {
           // 重启时把自动标签页误判为已丢失，进而重复新建产生孤儿标签页。
           matches = true;
         } else {
-          matches =
-            normalizeRoomUrl(tab?.url || '') === normalizeRoomUrl(roomUrl);
+          matches = normalizeRoomUrl(tab?.url || '') === normalizeRoomUrl(roomUrl);
         }
       } catch (_) {
         matches = false; // 标签页已不存在
       }
-      if (matches) {
-        state.autoOpenedTabs.set(roomUrl, tabId);
-      } else {
-        dirty = true;
+      (matches ? valid : invalid).push([roomUrl, tabId]);
+    }
+
+    // 走 storage 锁并"合并"写入：保留恢复期间新增的映射，只剔除确认失效的条目
+    await withStorageLock(async () => {
+      for (const [roomUrl, tabId] of valid) {
+        if (!state.autoOpenedTabs.has(roomUrl)) {
+          state.autoOpenedTabs.set(roomUrl, tabId);
+        }
       }
-    }
-    if (dirty) {
-      await chrome.storage.local.set({
-        [STORAGE_KEYS.AUTO_OPENED_TABS]: serializeAutoOpenedTabs(),
-      });
-    }
+      let dirty = false;
+      for (const [roomUrl, tabId] of invalid) {
+        // 仅当内存中仍是这条失效映射时才删除，避免误删并发新增的映射
+        if (state.autoOpenedTabs.get(roomUrl) === tabId) {
+          state.autoOpenedTabs.delete(roomUrl);
+          dirty = true;
+        } else if (!state.autoOpenedTabs.has(roomUrl)) {
+          dirty = true; // storage 中残留失效条目，需要重写
+        }
+      }
+      if (dirty) {
+        await chrome.storage.local.set({
+          [STORAGE_KEYS.AUTO_OPENED_TABS]: serializeAutoOpenedTabs(),
+        });
+      }
+    });
   }
 
   // 恢复恢复冷却时间戳，避免 SW 在重载时被回收后立刻再次重载
+  const now = Date.now();
+  const maxAge = DANMAKU_HEALTH.RECOVERY_RECORD_MAX_AGE_MS;
+
   const storedRecovery = result[STORAGE_KEYS.DANMAKU_LAST_RECOVERY];
   if (storedRecovery && typeof storedRecovery === 'object') {
-    const now = Date.now();
-    let dirty = false;
-    for (const [roomUrl, at] of Object.entries(storedRecovery)) {
-      if (typeof at === 'number' && now - at < RECOVERY_RECORD_MAX_AGE_MS) {
-        state.danmakuLastRecoveryAt.set(roomUrl, at);
-      } else {
-        dirty = true;
+    await withStorageLock(async () => {
+      let dirty = false;
+      for (const [roomUrl, at] of Object.entries(storedRecovery)) {
+        if (typeof at === 'number' && now - at < maxAge) {
+          if (!state.danmakuLastRecoveryAt.has(roomUrl)) {
+            state.danmakuLastRecoveryAt.set(roomUrl, at);
+          }
+        } else {
+          dirty = true;
+        }
       }
-    }
-    if (dirty) {
-      await chrome.storage.local.set({
-        [STORAGE_KEYS.DANMAKU_LAST_RECOVERY]: serializeRecoveryAttempts(),
-      });
-    }
+      if (dirty) {
+        await chrome.storage.local.set({
+          [STORAGE_KEYS.DANMAKU_LAST_RECOVERY]: serializeRecoveryAttempts(),
+        });
+      }
+    });
+  }
+
+  // 恢复连续失败计数：跨 SW 重启累计，否则每次唤醒都重新从 1 计数
+  const storedFailures = result[STORAGE_KEYS.DANMAKU_PROBE_FAILURES];
+  if (storedFailures && typeof storedFailures === 'object') {
+    await withStorageLock(async () => {
+      let dirty = false;
+      for (const [roomUrl, record] of Object.entries(storedFailures)) {
+        const count = record?.count;
+        const firstFailureAt = record?.firstFailureAt;
+        if (
+          typeof count === 'number' &&
+          count > 0 &&
+          typeof firstFailureAt === 'number' &&
+          now - firstFailureAt < maxAge
+        ) {
+          if (!state.danmakuProbeFailures.has(roomUrl)) {
+            state.danmakuProbeFailures.set(roomUrl, { count, firstFailureAt });
+          }
+        } else {
+          dirty = true;
+        }
+      }
+      if (dirty) {
+        await chrome.storage.local.set({
+          [STORAGE_KEYS.DANMAKU_PROBE_FAILURES]: serializeProbeFailures(),
+        });
+      }
+    });
+  }
+
+  // 恢复"扩展主动重载"标记（仅保留 TTL 内的）
+  const storedReloadExpected = result[STORAGE_KEYS.DANMAKU_RELOAD_EXPECTED];
+  if (storedReloadExpected && typeof storedReloadExpected === 'object') {
+    await withStorageLock(async () => {
+      let dirty = false;
+      for (const [roomUrl, record] of Object.entries(storedReloadExpected)) {
+        if (record && typeof record.at === 'number' && now - record.at < DANMAKU_HEALTH.RELOAD_EXPECTED_TTL_MS) {
+          if (!state.danmakuReloadExpected.has(roomUrl)) {
+            state.danmakuReloadExpected.set(roomUrl, record);
+          }
+        } else {
+          dirty = true;
+        }
+      }
+      if (dirty) {
+        await chrome.storage.local.set({
+          [STORAGE_KEYS.DANMAKU_RELOAD_EXPECTED]: serializeReloadExpected(),
+        });
+      }
+    });
   }
 
   if (result[STORAGE_KEYS.NOTIFIED_ROOMS]) {

@@ -152,9 +152,20 @@ Popup 右侧下方的"弹幕采集状态"面板每 3 秒自动刷新，是观察
 - `hasEndOverlay`：命中关播浮层选择器（`.live-end-container` / `.live-end-card` / `[data-testid="live-end"]`）且元素可见；
 - `healthy = isLiveRoom && hasActiveVideo && !hasEndOverlay`。
 
-恢复策略：消息无响应、`lastError` 或 `healthy=false` 均计为失败，**连续 2 次失败**触发恢复；
-恢复前先写入 `lastRecoveryAttemptAt` 再执行 `chrome.tabs.reload()`，随后进入 **30 秒冷却期**，
-冷却期内既不探测也不重载。标签页已丢失时直接按 `roomUrl` 新建。页面恢复后补发 `start_danmaku`。
+恢复策略：
+
+- 消息无响应、`lastError` 或 `healthy=false` 均计为失败，**连续 2 次失败**触发恢复。
+  失败计数持久化在 `chrome.storage.local.danmakuProbeFailures`，**跨 Service Worker 重启累计**
+  （MV3 空闲约 30 秒即销毁 SW，而探测只由 1 分钟 alarm 驱动，若计数只在内存，每次唤醒都会
+  从 1/2 重新开始，永远达不到阈值）。
+- 恢复前依次写入 `lastRecoveryAttemptAt`、`danmakuReloadExpected`，再执行
+  `chrome.tabs.reload()`，随后进入 **30 秒冷却期**；冷却期内既不探测也不重载。
+- `danmakuReloadExpected` 用于**忽略本次重载产生的 `danmaku_stop`**：页面 unload 会触发
+  content.js 上报 `danmaku_stop`，若不忽略就会销毁会话并 `autoDisableDanmakuIfIdle()`，
+  把 `danmakuEnabled` 持久化为 `false`，重载后的页面再也不会自行启动采集。
+  该标记只消费一次，且仅在标签页 URL 仍等于目标房间时生效；用户真实离开（URL 变化）
+  仍会正常清理会话与开关。
+- **标签页已丢失时立即重建**（不需要等第二次失败）；页面恢复后补发 `start_danmaku`。
 
 ### 8.1 关播页（页面仍在但已下播）
 
@@ -189,9 +200,22 @@ self.__debug.getState().autoOpenedTabs
 ```
 [Danmaku] 自动标签页健康检查失败 (1/2): https://live.kuaishou.com/u/xxx (tabId=N) 无响应
 ```
-3. 连续两次失败后应执行重载。若标签页已被关闭（`chrome.tabs.get` 抛错），应看到：
+3. 再触发一次（最早在下一次 1 分钟 alarm，或手动调用
+   `self.__debug.checkRecordingAndUpdateSession('...')`；若距上次探测不足 30 秒会被
+   节流跳过）。第二次失败后应执行重载：
 ```
-[Danmaku] 自动标签页丢失，已重新打开: https://live.kuaishou.com/u/xxx (tabId=M)
+[Danmaku] 自动标签页健康检查失败 (2/2): https://live.kuaishou.com/u/xxx (tabId=N) 无响应
+[Danmaku] 自动标签页健康检查失败，已重载: https://live.kuaishou.com/u/xxx (tabId=N)
+```
+4. 若标签页本身已被关闭（`chrome.tabs.get` 抛错），**第一次探测即重建**，不需要第二次失败：
+```
+[Danmaku] 自动标签页健康检查失败 (1/2): https://live.kuaishou.com/u/xxx (tabId=N) 无响应
+[Danmaku] 自动打开后台标签页: https://live.kuaishou.com/u/xxx (tabId=M)
+```
+5. 若 `chrome.tabs.reload` 自身失败（标签页在探测后被关闭），会先删除旧映射再重建：
+```
+[Danmaku] 重载自动标签页失败，将重新创建: https://live.kuaishou.com/u/xxx <error>
+[Danmaku] 自动打开后台标签页: https://live.kuaishou.com/u/xxx (tabId=M)
 ```
 
 ### 8.4 用户手动打开的标签页
@@ -202,14 +226,37 @@ self.__debug.getState().autoOpenedTabs
    关闭自动标签页的日志也只应针对自动标签页的 tabId。
 4. 录制结束后，手动标签页保持打开。
 
-### 8.5 冷却锁落盘验证
+### 8.5 冷却锁与失败计数落盘验证
 
 1. 在触发一次重载后，立刻在 Service Worker Console 中执行：
 ```js
-chrome.storage.local.get('danmakuLastRecoveryAt')
+chrome.storage.local.get(['danmakuLastRecoveryAt', 'danmakuProbeFailures', 'danmakuReloadExpected'])
 ```
 2. 应能看到该房间的时间戳（毫秒）。在 30 秒窗口内终止并重启 Service Worker 后再检查，
    时间戳仍在，且不会立即再次重载。
+3. 失败计数验证：让一次探测失败（见 8.3 第 2 步），然后**立刻终止 Service Worker**，
+   再唤醒并查看：
+```js
+chrome.storage.local.get('danmakuProbeFailures')
+// { danmakuProbeFailures: { 'https://live.kuaishou.com/u/xxx': { count: 1, firstFailureAt: 1717... } } }
+```
+   下一次探测仍会打印 `(2/2)` 并触发恢复，而不是退回 `(1/2)`。
+
+### 8.6 恢复重载不得关闭弹幕采集
+
+1. 按 8.1 触发一次重载。
+2. 重载期间（unload 时）Service Worker Console 应出现：
+```
+[Danmaku] 忽略扩展重载引发的 danmaku_stop，保留会话与采集开关: https://live.kuaishou.com/u/xxx
+```
+3. 检查开关状态仍为开启：
+```js
+chrome.storage.sync.get('danmakuEnabled')   // { danmakuEnabled: true }
+```
+4. 页面重新加载完成后，应看到 `已向自动标签页补发 start_danmaku`，且页面 Console 中弹幕
+   采集恢复（`[Content] 弹幕采集已启动`）。
+5. 反例：重载完成后**手动**把该标签页导航到别的页面，应看到正常的会话结束日志
+   （而非"忽略扩展重载引发的 danmaku_stop"），开关按原有逻辑关闭。
 
 ## 步骤九：测试录制拒绝场景
 

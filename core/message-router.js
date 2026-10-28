@@ -8,11 +8,11 @@ import { getConfig } from './config.js';
 import { handleContentStream } from './stream-detector.js';
 import {
   startDanmakuSession,
-  stopDanmakuSession,
   getDanmakuStatus,
   checkRecordingAndUpdateSession,
   handleDanmakuBatch,
   retryAllBufferingSessions,
+  handleDanmakuStopFromContent,
 } from './danmaku-session.js';
 import { setDanmakuEnabled } from './danmaku-switch.js';
 import { checkFollowingLivings } from './following-poll.js';
@@ -125,7 +125,14 @@ export function handleMessage(request, sender, sendResponse) {
 
   if (action === ACTIONS.DANMAKU_STOP) {
     const roomUrl = normalizeRoomUrl(request.url || sender.tab?.url || '');
-    if (roomUrl) stopDanmakuSession(roomUrl, true).catch(() => {});
+    if (roomUrl) {
+      // 恢复流程主动重载标签页时也会触发 unload → danmaku_stop。
+      // 交给 danmaku-session 判定：扩展发起的重载忽略清理，
+      // 真实离开（标签页已导航到别处）仍按原逻辑收尾。
+      handleDanmakuStopFromContent(roomUrl, {
+        senderTabUrl: sender.tab?.url,
+      }).catch(() => {});
+    }
     return;
   }
 }
