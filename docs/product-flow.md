@@ -38,7 +38,7 @@ Live Stream Sniffer 是一个 Manifest V3 Chrome 扩展，用于监测快手直�
 
 ### 链路一：关注开播轮询（主动检测）
 
-这是最核心的自动录制链路。Service Worker 启动时创建 `chrome.alarms` 定时器，每 1 分钟执行一次 `checkFollowingLivings()`。
+这是最核心的自动录制链路。Service Worker 启动时创建 `chrome.alarms` 定时器（`core/poll-schedule.js` 的 `createPollAlarm()`），每 1 分钟执行一次 `checkFollowingLivings()`。Popup 的"立即检测"按钮会先清除再重建该 alarm，因此手动检测同时起到"重置 interval 计时"的作用。
 
 执行流程如下：首先检查 `monitorEnabled` 开关（Popup 中可切换），未启用则跳过。然后检查 `activeRecordingRoomUrl`，如果存在且任一启用环境确认仍在录制中，则跳过本次查询以减少快手 API 风控风险。接下来检查是否访问过快手页面（有 Cookie 才能调 API），以及所有启用环境的关注主播合集是否为空。
 
@@ -112,11 +112,15 @@ Popup 分为左侧直播流列表和右侧状态面板。
 
 右侧上方展示后台监听关注列表的开关状态、上次请求时间和结果。开关控制 `monitorEnabled`，切换时通知 Service Worker 重新检测。
 
+状态面板下方是"⚡ 立即检测"按钮：点击后 Service Worker 先 `chrome.alarms.clear` 取消当前轮询计时，再 `chrome.alarms.create` 重建 alarm（下次触发时间重置为 now + 1 分钟），随后立即执行一次关注列表查询。手动查询跳过 `monitorEnabled` 判定和 2~6 秒防风控随机延迟，但保留"已在录制中则跳过"和"需访问过快手"等前置守卫；这些守卫不满足时按钮会显示具体原因而不是静默失败。查询与 alarm 触发的查询共用串行守卫 `_checkInFlight`，若已有查询在跑则复用它返回的结果，不会并发请求快手接口。手动检测会清空 `notifiedRooms`（意图是重新过一遍开播列表，让已通知过的房间重新触发通知），但不会清 `activeRecordingRoomUrl`（那是真实录制状态）。
+
 右侧下方是弹幕采集状态面板，每 3 秒自动刷新，展示所有活跃的弹幕会话。每个会话显示三种状态之一：**采集中**（绿色，`isSending=true`，弹幕正在向后端发送）、**等待录制**（橙色，会话已创建但录制尚未开始，弹幕在缓冲中）、**已停止**（红色，会话正在关闭）。统计行显示已采集事件数、缓冲区大小、运行时长和后台标签页状态。当会话处于发送状态但已采集事件数为零时，面板会显示引导提示，点击可跳转到对应直播间排查采集脚本是否正常工作。当后端拒绝录制时，Popup 通过 `recording_rejected` 消息自动清除该直播间过期的"录制中"按钮标记。
 
 ## Options 设置
 
-Options 页面渲染每个环境的独立配置卡片，包含启用开关、Base URL 输入框和关注主播 textarea。保存时验证 Base URL 格式（必须是 http/https）和 manifest 权限声明，通过后写入 `chrome.storage.sync`，并通知 Service Worker 重新检测。
+Options 页面顶部先渲染一张只读的"关注列表轮询"卡片，展示轮询间隔（取自 `core/config.js` 的 `POLL_INTERVAL_MINUTES`）、下次请求时间（取自 `chrome.alarms.get()` 的 `scheduledTime`）以及秒级倒计时。倒计时在页面本地每秒重算，并每 10 秒向后台重新拉取一次 `scheduledTime`——手动检测或 SW 重启都会重建 alarm，时间会变。卡片还会显示 alarm 是否已注册（"运行中"/"未注册"）。这些数据通过 `ACTIONS.GET_POLL_SCHEDULE` 消息从 `core/poll-schedule.js` 获取；Options 页面不直接 import `following-poll.js`，否则会把 `recording.js`、`danmaku-session.js` 一并拉进页面上下文并触发它们模块顶层的监听器注册。
+
+其下是每个环境的独立配置卡片，包含启用开关、Base URL 输入框和关注主播 textarea。保存时验证 Base URL 格式（必须是 http/https）和 manifest 权限声明，通过后写入 `chrome.storage.sync`，并通知 Service Worker 重新检测。
 
 ## 录制优化策略
 

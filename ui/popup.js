@@ -1,6 +1,9 @@
 import { getConfig } from '../core/config.js';
 import { getQualityInfo } from '../core/stream-quality.js';
-import { isEnvironmentRecording, sendRecordingRequest } from '../core/recording.js';
+import {
+  isEnvironmentRecording,
+  sendRecordingRequest,
+} from '../core/recording.js';
 import { isKuaishouLiveRoomUrl } from '../lib/url.js';
 import { ACTIONS } from '../lib/constants.js';
 
@@ -155,6 +158,57 @@ function updateRequestDataUI() {
           result.length > 20 ? result.substring(0, 20) + '...' : result;
       }
     }
+  });
+}
+
+// ========== 立即检测 ==========
+
+const SKIP_REASONS = {
+  busy: '上一次检测还没结束，请稍等',
+  disabled: '监听已停用，请先启用',
+  recording: '正在录制中，已跳过本次检测',
+  no_kuaishou_cookie: '还没访问过快手，请先打开一次 live.kuaishou.com',
+  no_authors: '没有配置关注的主播',
+  request_failed: '快手接口请求失败',
+  error: '检测异常，请查看后台日志',
+};
+
+function setCheckNowState(btn, text, disabled) {
+  btn.textContent = text;
+  btn.disabled = disabled;
+}
+
+function handleCheckNow() {
+  const btn = document.getElementById('checkNowBtn');
+  if (!btn || btn.disabled) return;
+
+  setCheckNowState(btn, '⏳ 检测中…', true);
+  chrome.runtime.sendMessage({ action: ACTIONS.CHECK_NOW }, (response) => {
+    // Popup 可能在等待期间被关闭，回调里 DOM 已不可用
+    if (!document.getElementById('checkNowBtn')) return;
+
+    if (chrome.runtime.lastError || !response) {
+      setCheckNowState(btn, '❌ 检测失败', false);
+      setTimeout(() => setCheckNowState(btn, '⚡ 立即检测', false), 2000);
+      return;
+    }
+
+    if (response.status === 'error') {
+      setCheckNowState(btn, '❌ 检测失败', false);
+      setTimeout(() => setCheckNowState(btn, '⚡ 立即检测', false), 2000);
+      return;
+    }
+
+    if (response.ran) {
+      setCheckNowState(btn, '✅ 检测完成', false);
+      // 结果本身由 storage 变更驱动 updateRequestDataUI() 渲染
+      setTimeout(() => setCheckNowState(btn, '⚡ 立即检测', false), 2000);
+      return;
+    }
+
+    const reason = SKIP_REASONS[response.reason] || '本次未执行检测';
+    setCheckNowState(btn, `⚠ ${reason}`, false);
+    setTimeout(() => setCheckNowState(btn, '⚡ 立即检测', false), 3000);
   });
 }
 
@@ -349,13 +403,15 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 // 弹幕采集开关交互
 document.getElementById('danmakuToggle').addEventListener('change', (e) => {
   const enabled = e.target.checked;
-  chrome.runtime.sendMessage(
-    { action: 'toggle_danmaku', enabled },
-    () => {
-      renderDanmakuStatus();
-    }
-  );
+  chrome.runtime.sendMessage({ action: 'toggle_danmaku', enabled }, () => {
+    renderDanmakuStatus();
+  });
 });
+
+// 立即检测：取消当前 interval 计时，立刻查一次关注列表，然后重新开始计时
+document
+  .getElementById('checkNowBtn')
+  .addEventListener('click', handleCheckNow);
 
 // 设置入口
 document.getElementById('openOptions').addEventListener('click', () => {

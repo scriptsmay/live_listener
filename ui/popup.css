@@ -567,6 +567,40 @@ body {
   display: none;
 }
 
+/* ========== 立即检测按钮 ========== */
+
+.btn-check-now {
+  width: 100%;
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 2px solid var(--primary);
+  border-radius: 12px;
+  background: #fff;
+  color: var(--primary-dark);
+  font-size: 13px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.btn-check-now:hover:not(:disabled) {
+  background: var(--primary);
+  color: #fff;
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(255, 140, 0, 0.25);
+}
+
+.btn-check-now:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.btn-check-now:disabled {
+  opacity: 0.75;
+  cursor: progress;
+  transform: none;
+  box-shadow: none;
+}
+
 /* ========== 设置入口 ========== */
 
 .settings-link {

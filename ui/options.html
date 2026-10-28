@@ -8,6 +8,29 @@
   <body>
     <div id="app">
       <h3 class="header">多环境配置</h3>
+      <div class="poll-card">
+        <div class="poll-header">
+          <span class="poll-title">关注列表轮询</span>
+          <span class="poll-badge" id="pollBadge">读取中…</span>
+        </div>
+        <div class="poll-grid">
+          <div class="poll-item">
+            <div class="poll-label">轮询间隔</div>
+            <div class="poll-value" id="pollInterval">--</div>
+          </div>
+          <div class="poll-item">
+            <div class="poll-label">下次请求时间</div>
+            <div class="poll-value" id="pollNextRun">--</div>
+          </div>
+          <div class="poll-item">
+            <div class="poll-label">距下次请求</div>
+            <div class="poll-value" id="pollCountdown">--</div>
+          </div>
+        </div>
+        <div class="poll-hint" id="pollHint">
+          后台每分钟检测一次关注列表；每次请求前另有 2~6 秒随机延迟防风控。
+        </div>
+      </div>
       <div id="envContainer"></div>
       <button id="save" class="btn-send">保存设置</button>
     </div>

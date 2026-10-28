@@ -15,7 +15,8 @@ import {
   handleDanmakuStopFromContent,
 } from './danmaku-session.js';
 import { setDanmakuEnabled } from './danmaku-switch.js';
-import { checkFollowingLivings } from './following-poll.js';
+import { checkFollowingLivings, checkFollowingNow } from './following-poll.js';
+import { getPollSchedule } from './poll-schedule.js';
 import { isKuaishouLiveRoomUrl, normalizeRoomUrl } from '../lib/url.js';
 
 export function handleMessage(request, sender, sendResponse) {
@@ -73,6 +74,25 @@ export function handleMessage(request, sender, sendResponse) {
     checkFollowingLivings();
     sendResponse({ status: 'recheck_started' });
     return;
+  }
+
+  // Popup「立即检测」：取消 interval → 立刻查一次 → 重新计时
+  // 必须等查询有结果再回包，Popup 要据此展示本次结果。
+  if (request.action === ACTIONS.CHECK_NOW) {
+    checkFollowingNow()
+      .then((result) => sendResponse({ status: 'ok', ...result }))
+      .catch((err) => {
+        sendResponse({ status: 'error', message: err.message });
+      });
+    return true; // 保持异步通道
+  }
+
+  // Options 页展示「轮询间隔 + 下次请求时间」
+  if (request.action === ACTIONS.GET_POLL_SCHEDULE) {
+    getPollSchedule()
+      .then((schedule) => sendResponse(schedule))
+      .catch(() => sendResponse({ active: false }));
+    return true;
   }
 
   // ===== 来自 content.js 的消息 =====

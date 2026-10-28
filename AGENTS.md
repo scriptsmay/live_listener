@@ -24,7 +24,8 @@ core/                          # 核心业务逻辑
   recording.js                 # 录制请求推送、状态查询、录制拒绝处理
   danmaku-session.js           # 弹幕会话管理、批量发送
   danmaku-switch.js            # 弹幕采集开关
-  following-poll.js            # 关注列表轮询、开播检测
+  following-poll.js            # 关注列表轮询、开播检测、手动立即检测
+  poll-schedule.js             # 轮询 alarm 的创建/查询/清除（可被 options 页依赖）
 lib/                           # 公共工具层（纯工具，无业务逻辑）
   http.js                      # fetchJson 统一封装
   url.js                       # isKuaishouLiveRoomUrl、getLiveRoomUrlFromRequest
@@ -86,6 +87,9 @@ ui/                            # 用户界面
 - `getConfig()` returns `{ environments: [...], followedAuthors: [...] }`.
 - **MV3 Service Worker 生命周期**：所有关键状态必须视为可丢失状态。SW 空闲 ~30s 后可能被销毁，重启时内存变量全部重置。`setInterval` 不可靠，必须用 `chrome.alarms` 替代（`core/following-poll.js`）。`Map`/`Set` 不可靠——必须确保关键状态已持久化且 `restoreState()` 能完整重建。
 - **MV3 alarm 必须每次 SW 启动重建**：`chrome.alarms.create()` 必须在 `initAlarms()` 顶层无条件执行，不能仅放在 `chrome.runtime.onInstalled` 回调里。`onInstalled` 只在首次安装/更新/Chrome 升级时触发，alarm 因任何边界条件（清缓存、扩展被禁用再启用、SW 异常）丢失后不会自愈，表现为"开关正常但不再轮询"的不可见故障。`chrome.alarms.create` 对同名 alarm 是幂等的，重复调用安全。详见 `decisions/adr-002-mv3-alarm-self-healing.md`（知识库镜像路径 `01-Projects/01-Active/chrome-live-listener/decisions/adr-002-mv3-alarm-self-healing.md`）。
+- **轮询 alarm 名称与周期只在 `core/poll-schedule.js` 和 `lib/constants.js`（`POLL_ALARM_NAME`）定义**：重新 `create` 同名 alarm 会重置 `scheduledTime`，这是 Popup「立即检测」实现"取消 interval → 立刻查 → 重新计时"的手段。不要在其它模块里散写 `'pollFollowingLivings'` 字面量或用别的周期重建它。
+- **UI 页面不要 import `following-poll.js`**：它的依赖链会连带求值 `recording.js` / `danmaku-session.js`，这些模块在顶层就注册 `chrome.alarms` 监听器，在 options/popup 上下文里会凭空跑起来。只读的调度信息一律通过 `ACTIONS.GET_POLL_SCHEDULE` 消息取。
+- **`checkFollowingLivings()` 有全局串行守卫 `_checkInFlight`**：alarm 触发、`TOGGLE_MONITOR`、`RECHECK_FOLLOWING`、`CHECK_NOW` 共用它。已有查询在跑时后续调用复用同一 Promise 的结果（返回 `coalesced: true`），绝不并发打快手接口。返回值形如 `{ ran, reason?, onlineAuthors? }`，`ran: false` 表示前置条件不满足而未真正请求，调用方据此向用户展示原因，不要吞掉。
 
 ## Danmaku architecture
 

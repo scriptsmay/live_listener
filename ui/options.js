@@ -1,4 +1,90 @@
 import { CONFIG_VERSION, DEFAULT_ENVIRONMENTS, getConfig } from '../core/config.js';
+import { ACTIONS } from '../lib/constants.js';
+
+// ========== 关注列表轮询状态 ==========
+//
+// 只读展示：间隔从 config.js 的 POLL_INTERVAL_MINUTES 读（经后台返回，避免
+// options 页重复计算），下次请求时间取自 chrome.alarms 的 scheduledTime。
+// 注意这里不 import following-poll.js —— 那条依赖链会在页面上下文里连带
+// 求值 recording.js / danmaku-session.js 并注册监听器。
+
+let pollSchedule = null;
+
+function pad(value) {
+  return `${value}`.padStart(2, '0');
+}
+
+function formatClock(date) {
+  return `${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(
+    date.getSeconds()
+  )}`;
+}
+
+function formatInterval(seconds) {
+  if (!seconds) return '--';
+  if (seconds < 60) return `${seconds} 秒`;
+  const minutes = Math.floor(seconds / 60);
+  const rest = seconds % 60;
+  return rest ? `${minutes} 分 ${rest} 秒` : `${minutes} 分钟`;
+}
+
+function formatCountdown(ms) {
+  if (ms <= 0) return '即将触发';
+  const total = Math.ceil(ms / 1000);
+  return total < 60
+    ? `${total} 秒后`
+    : `${Math.floor(total / 60)} 分 ${total % 60} 秒后`;
+}
+
+function renderSchedule() {
+  const badge = document.getElementById('pollBadge');
+  const intervalEl = document.getElementById('pollInterval');
+  const nextEl = document.getElementById('pollNextRun');
+  const countdownEl = document.getElementById('pollCountdown');
+  const hintEl = document.getElementById('pollHint');
+  if (!badge) return;
+
+  if (!pollSchedule) {
+    badge.textContent = '读取中…';
+    badge.className = 'poll-badge';
+    return;
+  }
+
+  intervalEl.textContent = formatInterval(pollSchedule.intervalSeconds);
+
+  const { active, scheduledTime } = pollSchedule;
+  badge.textContent = active ? '运行中' : '未注册';
+  badge.className = `poll-badge ${active ? 'on' : 'off'}`;
+
+  if (!scheduledTime) {
+    nextEl.textContent = '--';
+    countdownEl.textContent = '--';
+    hintEl.textContent = active
+      ? '后台每分钟检测一次关注列表；每次请求前另有 2~6 秒随机延迟防风控。'
+      : '未检测到轮询 alarm，重新加载扩展会自动重建。';
+    return;
+  }
+
+  nextEl.textContent = formatClock(new Date(scheduledTime));
+  countdownEl.textContent = formatCountdown(scheduledTime - Date.now());
+  hintEl.textContent =
+    '后台每分钟检测一次关注列表；每次请求前另有 2~6 秒随机延迟防风控。' +
+    '在 Popup 点「立即检测」会重置该计时。';
+}
+
+function refreshPollSchedule() {
+  chrome.runtime.sendMessage(
+    { action: ACTIONS.GET_POLL_SCHEDULE },
+    (response) => {
+      if (chrome.runtime.lastError) {
+        pollSchedule = null;
+      } else if (response) {
+        pollSchedule = response;
+      }
+      renderSchedule();
+    }
+  );
+}
 
 function createEnvField(labelText, control) {
   const field = document.createElement('div');
@@ -161,3 +247,11 @@ saveButton.addEventListener('click', () => {
 });
 
 loadSettings();
+refreshPollSchedule();
+
+// 本地秒级刷新倒计时（纯 UI 计算，不查后台），并每 10 秒从后台重取一次
+// scheduledTime —— 手动检测 / SW 重启都会重建 alarm，时间会变。
+setInterval(() => {
+  renderSchedule();
+}, 1000);
+setInterval(refreshPollSchedule, 10000);
