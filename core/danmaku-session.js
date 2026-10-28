@@ -36,7 +36,7 @@ const RETRY_ALARM_NAME = 'danmakuRetry';
 
 // ===== 缓冲模式重试 alarm 生命周期 =====
 
-/** 确保重试 alarm 存在（有缓冲会话时调用） */
+/** 确保重试 alarm 存在（有缓冲会话或有自动标签页时调用） */
 function ensureDanmakuRetryAlarm() {
   chrome.alarms.get(RETRY_ALARM_NAME, (existing) => {
     if (!existing) {
@@ -46,12 +46,25 @@ function ensureDanmakuRetryAlarm() {
   });
 }
 
-/** 无缓冲会话时清除 alarm，避免空转 */
-export function clearDanmakuRetryAlarmIfIdle() {
+/**
+ * 按当前状态同步 alarm：只要还有弹幕会话**或自动标签页**就保留。
+ *
+ * 只按 danmakuSessions 判断会漏掉主要故障场景：SW 被回收后会话（内存态）
+ * 丢失而 autoOpenedTabs（持久化）仍在，alarm 会被删掉，之后再也没有任何
+ * 东西去探测那个停留在"直播间已关闭"的自动标签页。
+ */
+function syncDanmakuRetryAlarm() {
   const state = getState();
-  // 只要还有任何会话（无论是否发送中），就保留 alarm 以检测录制启停状态变化
-  if (state.danmakuSessions.size > 0) return;
+  if (state.danmakuSessions.size > 0 || state.autoOpenedTabs.size > 0) {
+    ensureDanmakuRetryAlarm();
+    return;
+  }
   chrome.alarms.clear(RETRY_ALARM_NAME);
+}
+
+/** 无会话且无自动标签页时清除 alarm，避免空转 */
+export function clearDanmakuRetryAlarmIfIdle() {
+  syncDanmakuRetryAlarm();
 }
 
 // 注册 alarm 监听器（模块加载时立即生效）
@@ -62,8 +75,29 @@ chrome.alarms.onAlarm.addListener((alarm) => {
     // 检查所有会话：缓冲中的等待录制开始，发送中的等待录制结束
     checkRecordingAndUpdateSession(roomUrl).catch(() => {});
   }
-  clearDanmakuRetryAlarmIfIdle();
+  // SW 回收后 danmakuSessions 丢失，但 autoOpenedTabs 已从 storage 恢复。
+  // 这些房间没有会话可驱动探测，单独走"先查后端状态、确认录制中才探测"的路径，
+  // 避免 idle 期间探测在续播窗口内触发误重载。
+  for (const [roomUrl] of state.autoOpenedTabs) {
+    if (state.danmakuSessions.has(roomUrl)) continue;
+    probeAutoOpenedTabIfRecording(roomUrl).catch(() => {});
+  }
+  syncDanmakuRetryAlarm();
 });
+
+// SW 每次启动都会重新求值本模块：等状态恢复后按持久化状态重建 alarm，
+// 并把探测入口挂到调试对象上（background.js 在 import 之后才创建 self.__debug，
+// 因此必须等状态恢复完成再挂载，否则会被覆盖）。
+stateRestored
+  .then(() => {
+    syncDanmakuRetryAlarm();
+    if (typeof self !== 'undefined') {
+      self.__debug = self.__debug || {};
+      self.__debug.probeAutoOpenedTab = debugProbeAutoOpenedTab;
+      self.__debug.probeAutoOpenedTabIfRecording = probeAutoOpenedTabIfRecording;
+    }
+  })
+  .catch(() => {});
 
 // ===== 标签页管理 =====
 
@@ -123,6 +157,19 @@ function sendMessageWithTimeout(tabId, message, timeoutMs) {
  * 依据 danmakuEnabled=false 不会自行启动，必须由扩展无条件补发一次。
  */
 async function sendStartDanmaku(roomUrl, tabId) {
+  // 尊重用户的弹幕开关：用户手动关闭后，恢复流程不得把采集重新打开。
+  // 新标签页加载时 content.js 也会读取 danmakuEnabled，二者口径一致。
+  try {
+    const config = await getConfig();
+    if (config.danmakuEnabled !== true) {
+      console.log(`[Danmaku] 弹幕开关已关闭，跳过补发 start_danmaku: ${roomUrl}`);
+      return false;
+    }
+  } catch (err) {
+    // 读取配置失败时按关闭处理，避免误开采集
+    return false;
+  }
+
   try {
     await chrome.tabs.sendMessage(tabId, { action: ACTIONS.START_DANMAKU });
     console.log(`[Danmaku] 已向自动标签页补发 start_danmaku: ${roomUrl} (tabId=${tabId})`);
@@ -230,6 +277,8 @@ async function createAutoOpenedTab(roomUrl) {
       }
       await atomicSetAutoOpenedTab(roomUrl, tab.id);
       console.log(`[Danmaku] 自动打开后台标签页: ${roomUrl} (tabId=${tab.id})`);
+      // 有自动标签页就必须保证 alarm 存在，否则 SW 回收后再无探测入口
+      syncDanmakuRetryAlarm();
       return tab.id;
     } catch (err) {
       console.warn(`[Danmaku] 自动打开标签页失败: ${roomUrl}`, err.message);
@@ -251,7 +300,7 @@ async function createAutoOpenedTab(roomUrl) {
  * 执行自动标签页恢复：重载已有标签页，或标签页已丢失时按 roomUrl 重建。
  *
  * 关键顺序（D3）：
- * 1. 先落盘 lastRecoveryAttemptAt 与"扩展主动重载"标记；
+ * 1. 先落盘 danmakuLastRecoveryAt 与"扩展主动重载"标记；
  * 2. 再调用 reload/update/create，页面 unload 触发的 danmaku_stop 会被忽略；
  * 3. 恢复完成后才允许关闭流程继续。
  *
@@ -277,7 +326,6 @@ async function recoverAutoOpenedTab(roomUrl, existingTabId) {
       // 先加锁再操作，顺序不可交换
       await atomicMarkDanmakuRecoveryAttempt(roomUrl, Date.now());
       await atomicMarkDanmakuReloadExpected(roomUrl, existingTabId);
-      await atomicResetDanmakuProbeFailures(roomUrl);
 
       state.danmakuLastProbeAt.delete(roomUrl);
 
@@ -319,6 +367,10 @@ async function recoverAutoOpenedTab(roomUrl, existingTabId) {
         await atomicDeleteAutoOpenedTab(roomUrl);
         return false;
       }
+
+      // 重载/重建已成功发起，才把"连续失败"清零。若在重载前清零，
+      // 重载失败（标签页刚被关闭等）时阈值状态会丢失，等于放弃了恢复。
+      await atomicResetDanmakuProbeFailures(roomUrl);
 
       scheduleStartDanmaku(roomUrl, tabId);
       return true;
@@ -418,6 +470,63 @@ export async function probeAutoOpenedTab(roomUrl, options = {}) {
 }
 
 /**
+ * 探测自动标签页（调试/测试入口）。
+ *
+ * checkRecordingAndUpdateSession 在没有会话时会直接返回，扩展重载后用它
+ * 触发测试会静默 no-op。测试文档改用本函数：它不依赖 danmakuSessions，
+ * 直接按 roomUrl 执行一次强制探测（跳过 30 秒探测节流，但仍受恢复冷却约束）。
+ *
+ * @param {string} roomUrl
+ * @returns {Promise<boolean>} 探测结果（标签页是否健康）
+ */
+export async function debugProbeAutoOpenedTab(roomUrl) {
+  const normalized = normalizeRoomUrl(roomUrl || '');
+  if (!normalized) return false;
+  await stateRestored;
+  return probeAutoOpenedTab(normalized, { force: true });
+}
+
+/**
+ * 仅在**后端确认录制中**时探测自动标签页（alarm 唤醒路径）。
+ *
+ * SW 被回收后 danmakuSessions（内存态）丢失，只剩持久化的 autoOpenedTabs。
+ * 这类房间没有任何会话驱动探测，若直接探测会在直播间的续播窗口
+ * （后端尚未转回 recording、页面正在重新推流）里误判并触发重载。
+ * 因此这里先查状态接口，只有 recording/paused 才继续探测。
+ *
+ * @param {string} roomUrl
+ * @returns {Promise<boolean>} 是否执行了探测
+ */
+export async function probeAutoOpenedTabIfRecording(roomUrl) {
+  await stateRestored;
+  const state = getState();
+  if (!state.autoOpenedTabs.has(roomUrl)) return false;
+  if (state.danmakuClosing.has(roomUrl)) return false;
+
+  const config = await getConfig();
+  let isRecording = false;
+  for (const env of config.environments) {
+    if (!env.enabled) continue;
+    try {
+      if (await isEnvironmentRecording(env, roomUrl)) {
+        isRecording = true;
+        break;
+      }
+    } catch (err) {
+      console.warn(
+        `[Danmaku] 自动标签页状态查询失败 [${env.name}] ${env.statusApiUrl}?url=${roomUrl}:`,
+        err.message
+      );
+    }
+  }
+  // idle / 未知：不探测，避免续播窗口内误重载
+  if (!isRecording) return false;
+
+  await probeAutoOpenedTab(roomUrl);
+  return true;
+}
+
+/**
  * 录制确认后确保弹幕采集标签页可用（D3 扩展）。
  *
  * 与旧实现不同：已有标签页不再直接复用，而是先做健康探测。
@@ -499,13 +608,16 @@ export async function closeAutoOpenedTab(roomUrl) {
     state.danmakuLastProbeAt.delete(roomUrl);
     state.danmakuStartInFlight.delete(roomUrl);
 
-    if (tabId === undefined) return;
-    try {
-      await chrome.tabs.remove(tabId);
-      console.log(`[Danmaku] 录制结束，已关闭自动标签页: ${roomUrl} (tabId=${tabId})`);
-    } catch (_) {
-      // 标签页可能已被用户手动关闭
+    if (tabId !== undefined) {
+      try {
+        await chrome.tabs.remove(tabId);
+        console.log(`[Danmaku] 录制结束，已关闭自动标签页: ${roomUrl} (tabId=${tabId})`);
+      } catch (_) {
+        // 标签页可能已被用户手动关闭
+      }
     }
+    // 自动标签页已清空，可能不再需要重试 alarm
+    syncDanmakuRetryAlarm();
   } finally {
     state.danmakuClosing.delete(roomUrl);
   }
@@ -519,18 +631,29 @@ export async function closeAutoOpenedTab(roomUrl) {
  */
 export function startDanmakuSession(roomUrl, sessionStartMs, tabId, url, title) {
   const state = getState();
+  // 覆盖写会丢掉上一段缓冲：恢复重载时页面 unload 触发 danmaku_stop，
+  // 期间回填的弹幕会留在 buffer 里，若此时直接置空就永久丢失。
+  // 因此保留已有事件与计数，只重置会话标记。
+  const previous = state.danmakuSessions.get(roomUrl);
+  const previousBuffer = state.danmakuBatchBuffer.get(roomUrl) || [];
+
   state.danmakuSessions.set(roomUrl, {
     sessionStartMs,
     tabId,
     url,
     title,
-    eventCount: 0,
+    eventCount: previous?.eventCount || 0,
     startedAt: Date.now(),
     isSending: false,
     stopping: false,
     lastRecordingCheckAt: 0,
   });
-  state.danmakuBatchBuffer.set(roomUrl, []);
+  state.danmakuBatchBuffer.set(roomUrl, previousBuffer);
+  if (previousBuffer.length > 0) {
+    console.log(
+      `[Danmaku] 采集会话重建，保留 ${previousBuffer.length} 条待发弹幕: ${roomUrl}`
+    );
+  }
   console.log(`[Danmaku] 采集会话已创建（等待录制）: ${roomUrl}`);
   ensureDanmakuRetryAlarm();
 }
@@ -628,9 +751,12 @@ export async function handleDanmakuStopFromContent(roomUrl, context = {}) {
     return true;
   }
 
-  // 真实离开：清掉残留标记并按原逻辑收尾
+  // 真实离开：清掉残留标记并按原逻辑收尾。
+  // 同时关闭扩展自己打开的自动标签页、删除映射与恢复状态，否则该标签页
+  // 会变成没人认领的孤儿，并在后续 alarm 轮次里被反复探测。
   await atomicClearDanmakuReloadExpected(roomUrl);
   await stopDanmakuSession(roomUrl, true);
+  await closeAutoOpenedTab(roomUrl);
   return false;
 }
 

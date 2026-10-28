@@ -377,7 +377,7 @@ async function restoreStateInternal() {
     });
   }
 
-  // 恢复恢复冷却时间戳，避免 SW 在重载时被回收后立刻再次重载
+  // 恢复冷却时间戳（danmakuLastRecoveryAt），避免 SW 在重载时被回收后立刻再次重载
   const now = Date.now();
   const maxAge = DANMAKU_HEALTH.RECOVERY_RECORD_MAX_AGE_MS;
 
