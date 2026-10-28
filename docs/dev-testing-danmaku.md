@@ -138,7 +138,80 @@ Popup 右侧下方的"弹幕采集状态"面板每 3 秒自动刷新，是观察
 ```
 7. 后台标签页自动关闭。
 
-## 步骤八：测试录制拒绝场景
+## 步骤八：测试自动标签页健康恢复（D3）
+
+扩展会在后端确认录制中时，对**自己打开**的自动标签页做健康探测。探测消息为
+`{ action: 'danmaku_health_check', roomUrl }`，content script 返回：
+
+```json
+{ "isLiveRoom": true, "hasActiveVideo": true, "hasEndOverlay": false, "healthy": true }
+```
+
+- `isLiveRoom`：当前 URL 仍是快手直播间，且与 background 记录的 `roomUrl` 一致；
+- `hasActiveVideo`：存在 `<video>`、未 `ended`，且 `readyState >= 2` 或 `currentSrc` 为 http 地址；
+- `hasEndOverlay`：命中关播浮层选择器（`.live-end-container` / `.live-end-card` / `[data-testid="live-end"]`）且元素可见；
+- `healthy = isLiveRoom && hasActiveVideo && !hasEndOverlay`。
+
+恢复策略：消息无响应、`lastError` 或 `healthy=false` 均计为失败，**连续 2 次失败**触发恢复；
+恢复前先写入 `lastRecoveryAttemptAt` 再执行 `chrome.tabs.reload()`，随后进入 **30 秒冷却期**，
+冷却期内既不探测也不重载。标签页已丢失时直接按 `roomUrl` 新建。页面恢复后补发 `start_danmaku`。
+
+### 8.1 关播页（页面仍在但已下播）
+
+1. 让自动标签页对应的直播间下播（或手动构造 `<video>` 播放结束的页面状态）。
+2. 保持后端状态为 `recording`，等待 1 分钟重试 alarm 或调用：
+   `self.__debug.checkRecordingAndUpdateSession('https://live.kuaishou.com/u/xxx')`。
+3. 预期 Service Worker Console：
+```
+[Danmaku] 自动标签页健康检查失败 (1/2): https://live.kuaishou.com/u/xxx (tabId=N) { isLiveRoom: true, hasActiveVideo: false, hasEndOverlay: true }
+[Danmaku] 自动标签页健康检查失败 (2/2): https://live.kuaishou.com/u/xxx (tabId=N) { ... }
+[Danmaku] 自动标签页健康检查失败，已重载: https://live.kuaishou.com/u/xxx (tabId=N)
+[Danmaku] 已向自动标签页补发 start_danmaku: https://live.kuaishou.com/u/xxx (tabId=N)
+```
+4. 在重载后的 30 秒内重复触发检查，应**没有**新的探测失败日志（冷却期直接跳过）。
+
+### 8.2 Service Worker 重启后恢复自动标签页映射
+
+1. 确认已有自动标签页（Console 中出现过"自动打开后台标签页"，或 Popup 显示"后台标签页已打开"）。
+2. 打开 `chrome://extensions`，点击该扩展 Service Worker 的"终止"（或等待其空闲被回收），再点击"检查视图"唤醒。
+3. 在 Service Worker Console 中检查映射是否已恢复：
+```js
+self.__debug.getState().autoOpenedTabs
+// Map(1) { 'https://live.kuaishou.com/u/xxx' => N }
+```
+4. 触发一次录制状态检查，确认扩展仍能定位并探测该标签页（不会因为"忘了"而新开一个重复标签页）。
+
+### 8.3 content script 未响应
+
+1. 打开 `chrome://extensions`，点击该扩展的"重新加载"。此时已打开页面中残留的
+   content script 上下文失效，对它的 `tabs.sendMessage` 会 reject / 无响应。
+2. 触发健康检查。若消息无响应，`tabs.sendMessage` 超时（3 秒）后按失败计入：
+```
+[Danmaku] 自动标签页健康检查失败 (1/2): https://live.kuaishou.com/u/xxx (tabId=N) 无响应
+```
+3. 连续两次失败后应执行重载。若标签页已被关闭（`chrome.tabs.get` 抛错），应看到：
+```
+[Danmaku] 自动标签页丢失，已重新打开: https://live.kuaishou.com/u/xxx (tabId=M)
+```
+
+### 8.4 用户手动打开的标签页
+
+1. 手动在普通标签页中打开同一直播间（不要通过扩展打开），并让后端进入录制中。
+2. 触发 `checkRecordingAndUpdateSession()`。
+3. 预期：该标签页**不会被探测、重载或关闭**。`self.__debug.getState().autoOpenedTabs` 中不应出现该房间；
+   关闭自动标签页的日志也只应针对自动标签页的 tabId。
+4. 录制结束后，手动标签页保持打开。
+
+### 8.5 冷却锁落盘验证
+
+1. 在触发一次重载后，立刻在 Service Worker Console 中执行：
+```js
+chrome.storage.local.get('danmakuLastRecoveryAt')
+```
+2. 应能看到该房间的时间戳（毫秒）。在 30 秒窗口内终止并重启 Service Worker 后再检查，
+   时间戳仍在，且不会立即再次重载。
+
+## 步骤九：测试录制拒绝场景
 
 当后端返回非 2xx 响应（如 400 "暂停监听"）时：
 

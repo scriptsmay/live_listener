@@ -47,12 +47,94 @@ function sniffVideo() {
 // 3 秒轮询：既是检测也是保活
 setInterval(sniffVideo, 3000);
 
-// ========== 2. 弹幕采集状态 ==========
+// ========== 2. 标签页健康检查（D3） ==========
+//
+// background 会周期性探测扩展自己打开的自动标签页，判断页面是否仍在正常
+// 播放直播流。content_scripts 不支持 ESM（见文件头注释），因此无法 import
+// lib/url.js，这里内联与 isKuaishouLiveRoomUrl 等价的最小实现。
+//
+// 关播浮层选择器保持"小且明确"：宁可漏判（交由 video 活跃性兜底），
+// 也不要用模糊属性选择器造成误判，否则 background 会把正常直播页反复重载。
+// 每个选择器还要求元素可见，进一步降低误判概率。
+const END_OVERLAY_SELECTORS = [
+  '.live-end-container', // 快手关播提示容器
+  '.live-end-card', // 关播卡片
+  '[data-testid="live-end"]', // 稳定的测试标识（若页面提供）
+];
+
+function normalizeUrlForCompare(url) {
+  try {
+    const u = new URL(url);
+    u.search = '';
+    u.hash = '';
+    return u.href.replace(/\/$/, '');
+  } catch (_) {
+    return '';
+  }
+}
+
+function isElementVisible(el) {
+  if (!el) return false;
+  try {
+    const rect = el.getBoundingClientRect();
+    return rect.width > 0 && rect.height > 0;
+  } catch (_) {
+    return false;
+  }
+}
+
+function hasActiveVideoElement() {
+  const videos = document.querySelectorAll('video');
+  for (const video of videos) {
+    if (!video || video.ended) continue;
+    // 任一 video 处于加载中/可播放状态，或已绑定有效 http 流地址，即视为活跃
+    const ready = typeof video.readyState === 'number' && video.readyState >= 2;
+    const validSrc = typeof video.currentSrc === 'string' && video.currentSrc.startsWith('http');
+    if (ready || validSrc) return true;
+  }
+  return false;
+}
+
+function hasEndOverlayElement() {
+  for (const selector of END_OVERLAY_SELECTORS) {
+    let matched = [];
+    try {
+      matched = document.querySelectorAll(selector);
+    } catch (_) {
+      continue; // 非法选择器不应影响健康判定
+    }
+    for (const el of matched) {
+      if (isElementVisible(el)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * 构建健康检查结果
+ * @param {string} [expectedRoomUrl] - background 记录的该标签页应指向的直播间
+ * @returns {{isLiveRoom: boolean, hasActiveVideo: boolean, hasEndOverlay: boolean, healthy: boolean}}
+ */
+function buildHealthReport(expectedRoomUrl) {
+  const isLiveRoom =
+    isLiveRoomPage() &&
+    (!expectedRoomUrl || normalizeUrlForCompare(expectedRoomUrl) === normalizeUrlForCompare(location.href));
+  const hasActiveVideo = hasActiveVideoElement();
+  const hasEndOverlay = hasEndOverlayElement();
+  return {
+    isLiveRoom,
+    hasActiveVideo,
+    hasEndOverlay,
+    healthy: isLiveRoom && hasActiveVideo && !hasEndOverlay,
+  };
+}
+
+// ========== 3. 弹幕采集状态 ==========
 
 let danmakuInjected = false; // inject.js 是否已注入
 let danmakuActive = false;   // 弹幕采集是否处于活跃状态（注入 + 转发）
 
-// ========== 3. 注入弹幕拦截脚本 ==========
+// ========== 4. 注入弹幕拦截脚本 ==========
 
 function injectDanmakuScript() {
   if (!isLiveRoomPage()) return;
@@ -77,7 +159,7 @@ function injectDanmakuScript() {
   }
 }
 
-// ========== 4. 弹幕事件转发 ==========
+// ========== 5. 弹幕事件转发 ==========
 
 // 弹幕事件缓冲（每 3 秒批量发送一次，由前端聚合避免 SW 休眠问题）
 let danmakuBuffer = [];
@@ -192,12 +274,21 @@ window.addEventListener('message', (event) => {
 
 /**
  * 监听来自 background.js 的弹幕采集控制指令
+ *
+ * 注意：content_scripts 不能 import lib/constants.js，
+ * 这里沿用文件内既有的 action 字面量（与 ACTIONS 常量取值一致）。
  */
-chrome.runtime.onMessage.addListener((request) => {
+chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
   if (request.action === 'start_danmaku') {
     startDanmakuCollection();
   } else if (request.action === 'stop_danmaku') {
     stopDanmakuCollection();
+  } else if (request.action === 'danmaku_health_check') {
+    // 异步回复并保持消息通道，避免 background 侧拿到 undefined 而误判
+    Promise.resolve()
+      .then(() => sendResponse(buildHealthReport(request.roomUrl)))
+      .catch(() => {});
+    return true;
   }
 });
 
@@ -215,7 +306,7 @@ window.addEventListener('beforeunload', () => {
   }
 });
 
-// ========== 5. 初始化：检查开关状态 ==========
+// ========== 6. 初始化：检查开关状态 ==========
 
 chrome.storage.sync.get('danmakuEnabled', (result) => {
   if (result.danmakuEnabled === true) {
