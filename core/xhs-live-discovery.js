@@ -39,6 +39,14 @@ function buildTitle(item, roomUrl) {
 export async function handleXhsLiveInfo(items) {
   if (!Array.isArray(items) || items.length === 0) return;
 
+  // 先无条件缓存「直播间 → 主播」映射：即使监听开关关闭、主播不在监控名单，
+  // Popup 手动录制也需要它来补 host_user_id，避免按直播间地址重复建房间。
+  for (const item of items) {
+    if (item?.platform === 'xiaohongshu' && item.roomId && item.userId) {
+      await cacheXhsLiveRoomHost(item.roomId, item.userId);
+    }
+  }
+
   const { monitorEnabled } = await chrome.storage.sync.get('monitorEnabled');
   if (monitorEnabled === false) return;
 
@@ -70,9 +78,6 @@ export async function handleXhsLiveInfo(items) {
     }
     const failedAt = state.xhsDiscoveryCooldown.get(item.roomId);
     if (failedAt && Date.now() - failedAt < FAILURE_COOLDOWN_MS) continue;
-
-    // 记录本场 live_room_id → host_user_id，供 Popup 手动录制等无 host_id 的链路复用。
-    await cacheXhsLiveRoomHost(item.roomId, item.userId || '');
 
     state.xhsDiscoveryInFlight.add(notifyKey);
     try {

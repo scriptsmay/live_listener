@@ -36,30 +36,40 @@ function findEnvironmentsByTitle(config, title) {
 const XHS_HOST_CACHE_KEY = 'xhsLiveRoomHosts';
 const XHS_HOST_CACHE_LIMIT = 100;
 
-export async function cacheXhsLiveRoomHost(liveRoomId, hostUserId) {
-  if (!liveRoomId || !hostUserId) return;
+// SW 被回收后从 storage 懒加载；每个 JS realm（background / popup）各自持有一份。
+let xhsHostCache = null;
+
+async function getXhsHostMap() {
+  if (xhsHostCache) return xhsHostCache;
   try {
     const data = await chrome.storage.local.get(XHS_HOST_CACHE_KEY);
-    const map = { ...(data?.[XHS_HOST_CACHE_KEY] || {}) };
-    map[liveRoomId] = hostUserId;
-    const keys = Object.keys(map);
-    if (keys.length > XHS_HOST_CACHE_LIMIT) {
-      for (const key of keys.slice(0, keys.length - XHS_HOST_CACHE_LIMIT)) {
-        delete map[key];
-      }
+    xhsHostCache = { ...(data?.[XHS_HOST_CACHE_KEY] || {}) };
+  } catch (_) {
+    xhsHostCache = {};
+  }
+  return xhsHostCache;
+}
+
+export async function cacheXhsLiveRoomHost(liveRoomId, hostUserId) {
+  if (!liveRoomId || !hostUserId) return;
+  const map = await getXhsHostMap();
+  if (map[liveRoomId] === hostUserId) return;
+  map[liveRoomId] = hostUserId;
+  const keys = Object.keys(map);
+  if (keys.length > XHS_HOST_CACHE_LIMIT) {
+    for (const key of keys.slice(0, keys.length - XHS_HOST_CACHE_LIMIT)) {
+      delete map[key];
     }
+  }
+  try {
     await chrome.storage.local.set({ [XHS_HOST_CACHE_KEY]: map });
   } catch (_) {}
 }
 
 async function getCachedXhsHost(liveRoomId) {
   if (!liveRoomId) return '';
-  try {
-    const data = await chrome.storage.local.get(XHS_HOST_CACHE_KEY);
-    return (data?.[XHS_HOST_CACHE_KEY] || {})[liveRoomId] || '';
-  } catch (_) {
-    return '';
-  }
+  const map = await getXhsHostMap();
+  return map[liveRoomId] || '';
 }
 
 // ===== 对外暴露 =====
