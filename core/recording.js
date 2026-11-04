@@ -2,7 +2,11 @@
 // 录制请求推送、状态查询、录制拒绝处理
 // 监听 event-bus 的 STREAM_DETECTED 事件来触发录制
 
-import { getState, persistActiveRecording, clearActiveRecording } from './state.js';
+import {
+  getState,
+  persistActiveRecording,
+  clearActiveRecording,
+} from './state.js';
 import { on, EVENTS } from './event-bus.js';
 import { getConfig } from './config.js';
 import { fetchJson } from '../lib/http.js';
@@ -38,22 +42,34 @@ const XHS_HOST_CACHE_LIMIT = 100;
 
 // SW 被回收后从 storage 懒加载；每个 JS realm（background / popup）各自持有一份。
 let xhsHostCache = null;
+// 懒加载单飞：并发消息同时进入时共享同一次读取，避免各自覆盖模块变量后
+// 分两次写回 storage 造成映射丢失。
+let xhsHostCacheLoading = null;
 
 async function getXhsHostMap() {
   if (xhsHostCache) return xhsHostCache;
-  try {
-    const data = await chrome.storage.local.get(XHS_HOST_CACHE_KEY);
-    xhsHostCache = { ...(data?.[XHS_HOST_CACHE_KEY] || {}) };
-  } catch (_) {
-    xhsHostCache = {};
+  if (!xhsHostCacheLoading) {
+    xhsHostCacheLoading = (async () => {
+      try {
+        const data = await chrome.storage.local.get(XHS_HOST_CACHE_KEY);
+        xhsHostCache = { ...(data?.[XHS_HOST_CACHE_KEY] || {}) };
+      } catch (_) {
+        xhsHostCache = {};
+      }
+      return xhsHostCache;
+    })().finally(() => {
+      xhsHostCacheLoading = null;
+    });
   }
-  return xhsHostCache;
+  return xhsHostCacheLoading;
 }
 
 export async function cacheXhsLiveRoomHost(liveRoomId, hostUserId) {
   if (!liveRoomId || !hostUserId) return;
   const map = await getXhsHostMap();
   if (map[liveRoomId] === hostUserId) return;
+  // 按插入序淘汰最旧项；已有 key 先删除再写入，保持近似 LRU
+  if (map[liveRoomId]) delete map[liveRoomId];
   map[liveRoomId] = hostUserId;
   const keys = Object.keys(map);
   if (keys.length > XHS_HOST_CACHE_LIMIT) {
@@ -69,7 +85,38 @@ export async function cacheXhsLiveRoomHost(liveRoomId, hostUserId) {
 async function getCachedXhsHost(liveRoomId) {
   if (!liveRoomId) return '';
   const map = await getXhsHostMap();
-  return map[liveRoomId] || '';
+  if (map[liveRoomId]) return map[liveRoomId];
+  // 未命中再读一次 storage：另一个 realm（background/popup）可能刚写入，
+  // 而本 realm 的内存副本还是旧的。
+  try {
+    const data = await chrome.storage.local.get(XHS_HOST_CACHE_KEY);
+    const fresh = data?.[XHS_HOST_CACHE_KEY];
+    if (fresh && fresh[liveRoomId]) {
+      xhsHostCache = { ...(xhsHostCache || {}), ...fresh };
+      return fresh[liveRoomId];
+    }
+  } catch (_) {}
+  return '';
+}
+
+/**
+ * 判断录制请求是否真正被后端接受。
+ *
+ * 后端对「线程池已满 / 暂停监听」等业务拒绝返回 HTTP 200 + `status: 'Error'`，
+ * 只看 HTTP 状态会误判为成功，导致扩展把本场标记为已上报而不再重试。
+ * `Already recording` 表示其他请求已启动录制，按成功处理。
+ *
+ * @param {{ok?: boolean, data?: Object}} result
+ * @returns {boolean}
+ */
+export function isRecordingAccepted(result) {
+  if (!result?.ok) return false;
+  const status = result.data?.status;
+  if (status === 'Recording started' || status === 'Already recording')
+    return true;
+  // 兼容旧版后端：成功响应没有 status 字段，但带 room_id
+  if (!status && result.data?.data?.room_id) return true;
+  return false;
 }
 
 // ===== 对外暴露 =====
@@ -88,8 +135,8 @@ export async function getEnvironmentRoomStatus(env, roomUrl) {
   const data = result.data || {};
   const isRecording = Boolean(
     result.ok &&
-      data.exists &&
-      (data.data?.status === 'recording' || data.data?.status === 'paused')
+    data.exists &&
+    (data.data?.status === 'recording' || data.data?.status === 'paused')
   );
   const extensionDanmakuEnabled =
     data.data?.extension_danmaku_enabled === true ||
@@ -187,7 +234,7 @@ export async function sendToEnvironments(
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
-      if (result.ok) {
+      if (isRecordingAccepted(result)) {
         persistActiveRecording(roomUrl);
         activateDanmakuForRoom(roomUrl);
         if (result.data?.data?.extension_danmaku_enabled === true) {
@@ -215,7 +262,10 @@ export async function sendToEnvironments(
           })
           .catch(() => {});
       }
-      console.log(`[DEBUG][${env.name}] response:`, JSON.stringify(result.data));
+      console.log(
+        `[DEBUG][${env.name}] response:`,
+        JSON.stringify(result.data)
+      );
     } catch (err) {
       console.warn(`[Recording][${env.name}] 发送录制请求失败:`, err);
     }

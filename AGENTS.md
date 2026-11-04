@@ -81,7 +81,7 @@ ui/                            # 用户界面
 - Backend endpoints (configurable in settings):
   - `POST {notifyApiUrl}` with JSON body `{ url, title, room_url, caption, cover_url?, host_user_id?, live_room_id? }` — start recording. `cover_url` 仅在关注列表轮询链路可用：取快手 `follow/living` 返回的 `poster` 字段；其他链路（webRequest / 手动录制）不带该字段，由后端自行兜底。小红书链路会自动附带 `live_room_id`（从直播间 URL 解析），并优先使用 `chrome.storage.local` 中 `xhsLiveRoomHosts` 缓存（被动嗅探写入的 `live_room_id → host_user_id`）补上 `host_user_id`，避免后端把同一主播的每场直播新建为独立房间。该缓存在 `handleXhsLiveInfo()` 入口处**无条件写入**（先于监听开关/监控名单判断），因此即使监听关闭或主播不在名单，只要打开过直播间页面，手动录制也能拿到主播身份。
 
-**配置生效时机**：`inject.js` 对同一页面状态有发射去重，配置保存后已打开的直播间不会自动重扫。因此 `Options` 保存（`RECHECK_FOLLOWING`）与 Popup「立即检测」（`CHECK_NOW`）都会调用 `rescanXhsTabs()`，通知所有小红书标签页清空去重并重读 `__INITIAL_STATE__`。若 content script 未注入（扩展刚重载、页面未刷新），消息会静默失败，需要手动刷新页面。`handleXhsLiveInfo()` 的跳过原因会打印 `[XhsDiscovery]` 日志，最近一次结果写入 `chrome.storage.local.xhsLastDiscovery` 并显示在 Popup 平台摘要下方（未命中 / 已上报 / 后端未接受等）。
+**配置生效时机**：`inject.js` 对同一页面状态有发射去重，配置保存后已打开的直播间不会自动重扫。因此 `Options` 保存（`RECHECK_FOLLOWING`）与 Popup「立即检测」（`CHECK_NOW`）都会调用 `rescanXhsTabs()`，通知所有 `xiaohongshu.com` / `redelight.cn` 标签页清空去重并重读 `__INITIAL_STATE__`。若 content script 未注入（扩展刚重载、页面未刷新），消息会静默失败，需要手动刷新页面。`handleXhsLiveInfo()` 的跳过原因会打印 `[XhsDiscovery]` 日志，最近一次结果写入 `chrome.storage.local.xhsLastDiscovery` 并显示在 Popup 平台摘要下方（未命中 / 已上报 / 后端未接受等）。
   - `GET {statusApiUrl}?url={roomUrl}` — check if already recording (and whether `extension_danmaku_enabled` is enabled).
   - `GET {statusApiUrl}?active=true` — fetch active recording rooms (`kuaishou` / `xiaohongshu`) with `extension_danmaku_enabled = true` so `syncBackendActiveRecordings()` can automatically open/close background danmaku tabs.
   - `GET {statusApiUrl}?active=true&include_all=true` — Popup「录制中」卡片使用，返回全部平台的活跃录制（不要求 `extension_danmaku_enabled`）。只读展示，不要把它用于弹幕同步决策。
@@ -144,10 +144,11 @@ ui/                            # 用户界面
 
 - 解析结果经 `window.postMessage({type:'xhs_live_info', items})` → `content.js` → `ACTIONS.XHS_LIVE_INFO` → `core/xhs-live-discovery.js`。
 - `items` 统一为 `{platform:'xiaohongshu', live, roomId, userId, redId, nickname, title, streamUrl, coverUrl, roomUrl, source}`。
-- 直播间页面的 `liveStream` 是 Vue ref，`roomData` / `hostInfo` / `roomInfo` 也需要 `_value` 解包；`readXhsLiveRoomState()` 每 3 秒轮询页面内存（SPA 路由切换后状态才就绪）。
-- 匹配配置：每个环境新增 `xiaohongshuAuthors`，每行支持 `531916795`（小红书号）、24 位用户 ID、主页/直播间链接、`昵称|ID` 或纯昵称。匹配优先级：用户 ID > 小红书号 > 昵称。
-- 命中后调用 `sendToEnvironments()`，请求体额外携带 `host_user_id`、`live_room_id`，与后端 ADR-021 的稳定目标归并配合。
-- 去重：`notifiedRooms` 中使用 `xhs:{roomId}` key，仅在后端确认接受（`activeCount > 0`）后持久化；失败会在下一批页面响应时重试。
+- 直播间页面的 `liveStream` 是 Vue ref，`roomData` / `hostInfo` / `roomInfo` 也需要 `_value` 解包；`readXhsLiveRoomState()` 每 3 秒轮询页面内存（SPA 路由切换后状态才就绪）。只有 `liveStatus === 'success'`（缺省时看 `roomInfo.status === 2`）才判定在播；`roomInfo.roomId` 与当前 URL 的 room_id 不一致时直接忽略（SPA 软路由可能残留上一场状态）。
+- 消息入口只接受 `sender.tab.url` 属于 `xiaohongshu.com` / `redelight.cn` 的 `xhs_live_info`，并对 roomId / userId / 文本长度 / URL 协议做收敛，防止页面脚本伪造上报。
+- 匹配配置：每个环境新增 `xiaohongshuAuthors`，每行支持 `531916795`（小红书号）、24 位用户 ID、主页/直播间链接、`昵称|ID` 或纯昵称。配置了用户 ID / 小红书号时，页面对应 ID 字段存在就必须严格相等，只有页面完全没给该 ID 时才退回昵称匹配。
+- 命中后调用 `sendToEnvironments()`，请求体额外携带 `host_user_id`、`live_room_id`，与后端 ADR-021 的稳定目标归并配合。后端对业务拒绝返回 **HTTP 200 + `status: 'Error'`**（如线程池满 / 暂停监听），成功判定必须看响应体（`Recording started` / `Already recording`），不能只看 HTTP 状态。
+- 去重：`notifiedRooms` 中使用 `xhs:{roomId}` key，仅在后端确认接受（`activeCount > 0`）后持久化。`inject.js` 的发射去重带 5 分钟 TTL，失败冷却结束后同一房间会重新发射，因此失败重试不再依赖手动 rescan。
 
 ## Testing
 

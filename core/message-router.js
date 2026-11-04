@@ -20,6 +20,21 @@ import { getPollSchedule } from './poll-schedule.js';
 import { handleXhsLiveInfo } from './xhs-live-discovery.js';
 import { isSupportedLiveRoomUrl, normalizeRoomUrl } from '../lib/url.js';
 
+function isXiaohongshuTabUrl(url) {
+  if (typeof url !== 'string' || !url) return false;
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return (
+      host === 'xiaohongshu.com' ||
+      host.endsWith('.xiaohongshu.com') ||
+      host === 'redelight.cn' ||
+      host.endsWith('.redelight.cn')
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
 /**
  * 让所有已打开的小红书页面重新解析一次直播状态。
  * 用于配置保存 / Popup「立即检测」：inject 有发射去重，不重扫的话
@@ -28,7 +43,10 @@ import { isSupportedLiveRoomUrl, normalizeRoomUrl } from '../lib/url.js';
  */
 async function rescanXhsTabs() {
   try {
-    const tabs = await chrome.tabs.query({ url: ['*://*.xiaohongshu.com/*'] });
+    // redelight.cn 同样是小红书域名，manifest/content script 已覆盖，查询需保持一致
+    const tabs = await chrome.tabs.query({
+      url: ['*://*.xiaohongshu.com/*', '*://*.redelight.cn/*'],
+    });
     let sent = 0;
     for (const tab of tabs) {
       if (!tab.id) continue;
@@ -49,7 +67,10 @@ export function handleMessage(request, sender, sendResponse) {
   if (request.action === ACTIONS.GET_DANMAKU_STATUS) {
     const sessions = getDanmakuStatus();
     getConfig().then((config) => {
-      sendResponse({ sessions, danmakuEnabled: config.danmakuEnabled ?? false });
+      sendResponse({
+        sessions,
+        danmakuEnabled: config.danmakuEnabled ?? false,
+      });
     });
     return true; // 保持异步通道
   }
@@ -129,8 +150,12 @@ export function handleMessage(request, sender, sendResponse) {
 
   const action =
     request.action ||
-    { addMedia: ACTIONS.ADD_MEDIA, danmakuReady: ACTIONS.DANMAKU_READY,
-      danmakuBatch: ACTIONS.DANMAKU_BATCH, danmakuStop: ACTIONS.DANMAKU_STOP }[request.Message];
+    {
+      addMedia: ACTIONS.ADD_MEDIA,
+      danmakuReady: ACTIONS.DANMAKU_READY,
+      danmakuBatch: ACTIONS.DANMAKU_BATCH,
+      danmakuStop: ACTIONS.DANMAKU_STOP,
+    }[request.Message];
 
   if (action === ACTIONS.ADD_MEDIA) {
     const tab = sender.tab;
@@ -186,6 +211,15 @@ export function handleMessage(request, sender, sendResponse) {
   }
 
   if (action === ACTIONS.XHS_LIVE_INFO) {
+    // 只接受来自小红书域名的 content script 消息：页面上的任意脚本都能
+    // postMessage，若不在这一层校验来源，可被诱导向本地后端上报任意流地址。
+    if (!isXiaohongshuTabUrl(sender.tab?.url)) {
+      console.warn(
+        '[XhsDiscovery] 忽略来源不可信的 xhs_live_info:',
+        sender.tab?.url || '-'
+      );
+      return;
+    }
     handleXhsLiveInfo(request.items).catch((err) => {
       console.warn('[XhsDiscovery] 处理页面直播信息失败:', err.message);
     });

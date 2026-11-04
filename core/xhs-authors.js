@@ -29,7 +29,8 @@ function extractUserIdFromUrl(text) {
       host.endsWith('.redelight.cn');
     if (!isXhsHost) return '';
 
-    const queryUserId = url.searchParams.get('host_id') || url.searchParams.get('hostId');
+    const queryUserId =
+      url.searchParams.get('host_id') || url.searchParams.get('hostId');
     if (queryUserId) return queryUserId;
 
     const segments = url.pathname.split('/').filter(Boolean);
@@ -62,7 +63,9 @@ export function parseXhsAuthorEntry(raw) {
 
   if (/^https?:\/\//i.test(text)) {
     const userId = extractUserIdFromUrl(text);
-    return userId ? { name, userId, redId: '' } : { name: name || text, userId: '', redId: '' };
+    return userId
+      ? { name, userId, redId: '' }
+      : { name: name || text, userId: '', redId: '' };
   }
 
   if (USER_ID_RE.test(text)) {
@@ -83,7 +86,9 @@ export function parseXhsAuthorEntry(raw) {
 export function buildXhsAuthorIndex(environments) {
   const index = [];
   for (const env of environments || []) {
-    const entries = Array.isArray(env.xiaohongshuAuthors) ? env.xiaohongshuAuthors : [];
+    const entries = Array.isArray(env.xiaohongshuAuthors)
+      ? env.xiaohongshuAuthors
+      : [];
     for (const raw of entries) {
       const entry = parseXhsAuthorEntry(raw);
       if (entry) index.push({ entry, env });
@@ -103,11 +108,21 @@ export function matchesXhsAuthor(item, entry) {
   const userId = normalizeText(item.userId).toLowerCase();
   const redId = normalizeText(item.redId);
   const nickname = normalizeText(item.nickname);
+  const nicknameMatches = Boolean(
+    entry.name && nickname && entry.name === nickname
+  );
 
-  if (entry.userId && userId && entry.userId.toLowerCase() === userId) return true;
-  if (entry.redId && redId && entry.redId === redId) return true;
-  if (entry.name && nickname && entry.name === nickname) return true;
-  return false;
+  // 配置了稳定 ID 时，页面只要给出了同维度 ID 就必须严格相等，
+  // 不能仅凭昵称命中别的同名主播；页面对该维度完全没数据时才退回昵称。
+  if (entry.userId) {
+    if (userId) return entry.userId.toLowerCase() === userId;
+    return nicknameMatches;
+  }
+  if (entry.redId) {
+    if (redId) return entry.redId === redId;
+    return nicknameMatches;
+  }
+  return nicknameMatches;
 }
 
 /**

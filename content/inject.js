@@ -44,6 +44,15 @@
     return afterLive.length > 0 && Boolean(afterLive[0]);
   }
 
+  /** 当前地址中的直播 room_id（与页面状态交叉校验用）。 */
+  function getCurrentXhsLiveRoomId() {
+    if (!isXiaohongshuLivePage()) return '';
+    const segments = location.pathname.split('/').filter(Boolean);
+    const liveIdx = segments.findIndex((s) => s.toLowerCase() === 'livestream');
+    const afterLive = segments.slice(liveIdx + 1).filter((seg) => !/^dynpath/i.test(seg));
+    return afterLive.find((seg) => /^\d{10,}$/.test(seg)) || afterLive[0] || '';
+  }
+
   if (!isKuaishouLive && !isXiaohongshuHost) return;
 
   console.log(TAG, `弹幕拦截脚本已注入 (${VERSION}, host=${location.hostname})`);
@@ -278,8 +287,22 @@
     { kind: 'homefeed', re: /\/api\/sns\/web\/v1\/homefeed/ },
     { kind: 'feed', re: /\/api\/sns\/web\/v1\/feed\// },
   ];
-  const xhsEmittedKeys = new Set();
+  // roomId|userId|hasStream → 最近发射时间。带 TTL 而不是永久去重：
+  // 上报失败后背景侧进入 5 分钟冷却，冷却结束后需要允许同一房间重新发射。
+  const xhsEmittedKeys = new Map();
   const XHS_EMITTED_KEYS_LIMIT = 500;
+  const XHS_EMITTED_KEY_TTL_MS = 5 * 60 * 1000;
+
+  function pruneXhsEmittedKeys(now) {
+    // Map 保持插入序（重复写入前先 delete），头部即最旧
+    for (const [key, ts] of xhsEmittedKeys) {
+      if (now - ts <= XHS_EMITTED_KEY_TTL_MS) break;
+      xhsEmittedKeys.delete(key);
+    }
+    while (xhsEmittedKeys.size > XHS_EMITTED_KEYS_LIMIT) {
+      xhsEmittedKeys.delete(xhsEmittedKeys.keys().next().value);
+    }
+  }
 
   function matchXhsLiveEndpoint(url) {
     if (!isXiaohongshuHost || typeof url !== 'string' || !url) return null;
@@ -353,9 +376,15 @@
     return typeof value === 'string' ? value.trim() : '';
   }
 
+  /** ID 字段兼容页面返回数值型的情况（roomId/userId 常见为 number）。 */
+  function cleanId(value) {
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+    return cleanString(value);
+  }
+
   function buildXhsLiveItem(raw) {
     if (!raw || typeof raw !== 'object') return null;
-    const roomId = cleanString(raw.roomId);
+    const roomId = cleanId(raw.roomId);
     if (!roomId) return null;
     const live =
       raw.live === undefined
@@ -365,8 +394,8 @@
       platform: 'xiaohongshu',
       live,
       roomId,
-      userId: cleanString(raw.userId),
-      redId: cleanString(raw.redId),
+      userId: cleanId(raw.userId),
+      redId: cleanId(raw.redId),
       nickname: cleanString(raw.nickname),
       title: cleanString(raw.title),
       streamUrl: cleanString(raw.streamUrl),
@@ -396,7 +425,7 @@
         (live && (live.tLiveHostInfo || live.liveHostInfo)) || node.tLiveHostInfo || null;
 
       if (roomInfo && hostInfo) {
-        const roomId = cleanString(roomInfo.roomIdStr || roomInfo.roomId);
+        const roomId = cleanId(roomInfo.roomIdStr || roomInfo.roomId);
         const link = cleanString(roomInfo.link);
         const streamUrl =
           findFlvUrl(live && live.roomExtraInfo) ||
@@ -519,16 +548,17 @@
   }
 
   function emitXhsLiveItems(items) {
+    const now = Date.now();
+    pruneXhsEmittedKeys(now);
     const fresh = [];
     for (const item of items || []) {
       if (!item || !item.roomId) continue;
       const key = `${item.roomId}|${item.userId}|${item.streamUrl ? '1' : '0'}`;
       if (xhsEmittedKeys.has(key)) continue;
-      xhsEmittedKeys.add(key);
+      xhsEmittedKeys.set(key, now);
       fresh.push(item);
     }
     if (!fresh.length) return;
-    if (xhsEmittedKeys.size > XHS_EMITTED_KEYS_LIMIT) xhsEmittedKeys.clear();
 
     window.postMessage(
       {
@@ -579,10 +609,18 @@
     const hostInfo = unwrapRef(roomData.hostInfo) || {};
     const roomInfo = unwrapRef(roomData.roomInfo) || {};
 
-    const roomId = cleanString(roomInfo.roomId || roomInfo.roomIdStr);
+    const roomId = cleanId(roomInfo.roomId || roomInfo.roomIdStr);
     if (!roomId) return;
 
-    const userId = cleanString(
+    // SPA 软路由后 __INITIAL_STATE__.liveStream 可能仍是上一个直播间：
+    // 与当前地址不一致时直接忽略，避免给已经离开的房间上报录制。
+    const urlRoomId = getCurrentXhsLiveRoomId();
+    if (urlRoomId && urlRoomId !== roomId) {
+      lastXhsRoomStateKey = '';
+      return;
+    }
+
+    const userId = cleanId(
       hostInfo.userId || hostInfo.user_id || parseQueryParam(roomInfo.deeplink, 'host_id')
     );
     const streamUrl =
@@ -590,7 +628,12 @@
       findFlvUrl(roomInfo.pullConfig) ||
       findFlvUrl(roomInfo);
 
-    const stateKey = `${roomId}|${userId}|${streamUrl}|${roomInfo.status}`;
+    // 与服务端 XiaohongshuChecker 对齐：liveStatus 明确非 success 时不算在播。
+    const liveStatus = unwrapRef(liveStream.liveStatus);
+    const statusIsLive = Number(roomInfo.status) === 2;
+    const live = liveStatus ? liveStatus === 'success' && statusIsLive : statusIsLive;
+
+    const stateKey = `${roomId}|${userId}|${streamUrl}|${roomInfo.status}|${liveStatus || ''}`;
     if (stateKey === lastXhsRoomStateKey) return;
     lastXhsRoomStateKey = stateKey;
 
@@ -601,7 +644,7 @@
       title: roomInfo.roomTitle || roomInfo.name,
       streamUrl,
       coverUrl: roomInfo.roomCover,
-      live: roomInfo.status,
+      live,
       source: 'live_room',
     });
     if (item) emitXhsLiveItems([item]);

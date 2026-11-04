@@ -20,6 +20,58 @@ const FAILURE_COOLDOWN_MS = 5 * 60 * 1000;
 
 const LAST_DISCOVERY_KEY = 'xhsLastDiscovery';
 
+const MAX_ID_LEN = 64;
+const MAX_TEXT_LEN = 120;
+const MAX_URL_LEN = 2048;
+const XHS_ITEM_SOURCES = new Set([
+  'squarefeed',
+  'onebox',
+  'homefeed',
+  'feed',
+  'live_room',
+]);
+
+function cleanId(value) {
+  if (typeof value === 'number' && Number.isFinite(value)) return String(value);
+  return typeof value === 'string' ? value.trim().slice(0, MAX_ID_LEN) : '';
+}
+
+function cleanText(value) {
+  return typeof value === 'string' ? value.trim().slice(0, MAX_TEXT_LEN) : '';
+}
+
+function cleanHttpUrl(value) {
+  if (typeof value !== 'string') return '';
+  const url = value.trim().slice(0, MAX_URL_LEN);
+  return /^https?:\/\//i.test(url) ? url : '';
+}
+
+/**
+ * 收敛 content script 消息的字段类型与长度。消息来自页面（postMessage 可伪造），
+ * 不能直接信任其结构；platform 固定为 xiaohongshu，roomId 必须存在。
+ *
+ * @param {*} raw
+ * @returns {Object|null}
+ */
+function sanitizeXhsItem(raw) {
+  if (!raw || typeof raw !== 'object') return null;
+  const roomId = cleanId(raw.roomId);
+  if (!roomId) return null;
+  const streamUrl = cleanHttpUrl(raw.streamUrl);
+  return {
+    platform: 'xiaohongshu',
+    live: raw.live === false ? false : true,
+    roomId,
+    userId: cleanId(raw.userId),
+    redId: cleanId(raw.redId),
+    nickname: cleanText(raw.nickname),
+    title: cleanText(raw.title),
+    streamUrl,
+    coverUrl: cleanHttpUrl(raw.coverUrl),
+    source: XHS_ITEM_SOURCES.has(raw.source) ? raw.source : '',
+  };
+}
+
 async function persistLastDiscovery(record) {
   try {
     await chrome.storage.local.set({ [LAST_DISCOVERY_KEY]: record });
@@ -28,7 +80,7 @@ async function persistLastDiscovery(record) {
 
 function buildRoomUrl(item) {
   return normalizeRoomUrl(
-    item.roomUrl || `https://www.xiaohongshu.com/livestream/${item.roomId}`
+    `https://www.xiaohongshu.com/livestream/${item.roomId}`
   );
 }
 
@@ -46,6 +98,8 @@ function buildTitle(item, roomUrl) {
  */
 export async function handleXhsLiveInfo(items) {
   if (!Array.isArray(items) || items.length === 0) return;
+  items = items.map(sanitizeXhsItem).filter(Boolean);
+  if (items.length === 0) return;
 
   // 先无条件缓存「直播间 → 主播」映射：即使监听开关关闭、主播不在监控名单，
   // Popup 手动录制也需要它来补 host_user_id，避免按直播间地址重复建房间。
@@ -59,7 +113,8 @@ export async function handleXhsLiveInfo(items) {
 
   // 下播/直播结束：解除本场去重，避免同一直播间重新开播时被永久跳过。
   for (const item of items) {
-    if (item?.platform !== 'xiaohongshu' || item.live !== false || !item.roomId) continue;
+    if (item?.platform !== 'xiaohongshu' || item.live !== false || !item.roomId)
+      continue;
     const endedKey = `xhs:${item.roomId}`;
     state.xhsDiscoveryCooldown.delete(item.roomId);
     if (state.notifiedRooms.delete(endedKey)) {
@@ -78,7 +133,9 @@ export async function handleXhsLiveInfo(items) {
   const enabledEnvs = config.environments.filter((env) => env.enabled);
   const index = buildXhsAuthorIndex(enabledEnvs);
   if (!index.length) {
-    console.log('[XhsDiscovery] 跳过：没有可用的监控条目（检查环境开关与「小红书开播发现」名单）');
+    console.log(
+      '[XhsDiscovery] 跳过：没有可用的监控条目（检查环境开关与「小红书开播发现」名单）'
+    );
     return;
   }
 
@@ -90,7 +147,8 @@ export async function handleXhsLiveInfo(items) {
   }
 
   for (const item of items) {
-    if (!item || item.platform !== 'xiaohongshu' || item.live === false) continue;
+    if (!item || item.platform !== 'xiaohongshu' || item.live === false)
+      continue;
     if (!item.roomId) continue;
     if (!item.streamUrl) {
       console.log(`[XhsDiscovery] 跳过：直播间 ${item.roomId} 未解析到流地址`);

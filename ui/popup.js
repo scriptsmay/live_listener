@@ -2,6 +2,7 @@ import { getConfig } from '../core/config.js';
 import { getQualityInfo } from '../core/stream-quality.js';
 import {
   isEnvironmentRecording,
+  isRecordingAccepted,
   sendRecordingRequest,
 } from '../core/recording.js';
 import { fetchJson } from '../lib/http.js';
@@ -114,9 +115,8 @@ async function renderPlatformSummary() {
   );
 
   // 最近一次小红书发现结果，便于判断"为什么没自动录"
-  const { xhsLastDiscovery } = await chrome.storage.local.get(
-    'xhsLastDiscovery'
-  );
+  const { xhsLastDiscovery } =
+    await chrome.storage.local.get('xhsLastDiscovery');
   if (xhsLastDiscovery?.at) {
     const last = document.createElement('div');
     last.className = 'platform-last';
@@ -147,8 +147,7 @@ function renderRecordingItem(room) {
 
   const badge = document.createElement('span');
   badge.className = `platform-badge ${room.platform || ''}`;
-  badge.textContent =
-    PLATFORM_LABELS[room.platform] || room.platform || '直播';
+  badge.textContent = PLATFORM_LABELS[room.platform] || room.platform || '直播';
 
   const name = document.createElement('div');
   name.className = 'recording-name';
@@ -193,7 +192,6 @@ async function renderActiveRecordings() {
 }
 
 async function loadActiveRecordings(container, countEl) {
-
   const config = await getConfig();
   const enabledEnvs = config.environments.filter((env) => env.enabled);
 
@@ -678,7 +676,7 @@ document.addEventListener('click', async (e) => {
           roomUrl
         );
 
-        if (result.ok) {
+        if (isRecordingAccepted(result)) {
           successCount++;
         }
       } catch (err) {
