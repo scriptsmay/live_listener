@@ -37,6 +37,84 @@ function formatStreamTime(timestamp) {
   return `${padTime(date.getMonth() + 1)}-${padTime(date.getDate())} ${time}`;
 }
 
+// 小红书直播 CDN 的清晰度无法从 URL 判断，Popup 打开时按需探测真实分辨率。
+const probeCache = new Map();
+const probeInFlight = new Map();
+
+function isXhsLiveCdnUrl(url) {
+  if (typeof url !== 'string') return false;
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return (
+      (host.endsWith('.xhscdn.com') || host.endsWith('.xhscdn.net')) &&
+      host.startsWith('live')
+    );
+  } catch (_) {
+    return false;
+  }
+}
+
+/** 从环境的 notify 地址推导探测接口地址。 */
+function probeApiUrl(env) {
+  const base = env?.notifyApiUrl;
+  if (typeof base !== 'string' || !base.includes('/notify/live_download')) {
+    return '';
+  }
+  return base.replace('/notify/live_download', '/notify/probe_stream');
+}
+
+async function probeStreamQuality(url) {
+  if (probeCache.has(url)) return probeCache.get(url);
+  if (probeInFlight.has(url)) return probeInFlight.get(url);
+
+  const task = (async () => {
+    try {
+      const config = await getConfig();
+      const env = config.environments.find(
+        (item) => item.enabled && probeApiUrl(item)
+      );
+      if (!env) return null;
+      const result = await fetchJson(probeApiUrl(env), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url }),
+      });
+      const data =
+        result.ok && result.data?.status === 'ok' ? result.data.data : null;
+      if (data?.ok) probeCache.set(url, data);
+      return data;
+    } catch (_) {
+      return null;
+    } finally {
+      probeInFlight.delete(url);
+    }
+  })();
+
+  probeInFlight.set(url, task);
+  return task;
+}
+
+function qualityLabel(info) {
+  if (!info?.height) return '未知';
+  const res = info.height >= 2160 ? '4K' : `${info.height}p`;
+  const codec = String(info.codec || '').toLowerCase();
+  const codecLabel =
+    codec === 'hevc' || codec === 'h265'
+      ? 'HEVC'
+      : codec === 'h264'
+        ? 'H.264'
+        : codec.toUpperCase();
+  return codecLabel ? `${res} ${codecLabel}` : res;
+}
+
+function qualityColor(info) {
+  const height = info?.height || 0;
+  if (height >= 2160) return '#8b5cf6';
+  if (height >= 1080) return '#ff5000';
+  if (height >= 720) return '#1e90ff';
+  return '#999';
+}
+
 function normalizeStream(stream) {
   if (!stream || typeof stream === 'string') {
     return {
@@ -294,6 +372,24 @@ function renderList() {
       qualityTag.className = 'quality-tag';
       qualityTag.style.background = quality.color;
       qualityTag.textContent = quality.label;
+
+      // 小红书地址中没有清晰度信息，异步探测后回填真实分辨率/编码
+      if (isXhsLiveCdnUrl(url)) {
+        qualityTag.textContent = '探测中…';
+        qualityTag.style.background = '#999';
+        probeStreamQuality(url).then((info) => {
+          if (!qualityTag.isConnected) return;
+          if (!info) {
+            qualityTag.textContent = '未知';
+            return;
+          }
+          qualityTag.textContent = qualityLabel(info);
+          qualityTag.style.background = qualityColor(info);
+          if (info.bit_rate) {
+            qualityTag.title = `${(info.bit_rate / 1e6).toFixed(1)} Mbps`;
+          }
+        });
+      }
 
       const typeTag = document.createElement('span');
       typeTag.className = 'stream-type';

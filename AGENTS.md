@@ -81,6 +81,8 @@ ui/                            # 用户界面
 - Backend endpoints (configurable in settings):
   - `POST {notifyApiUrl}` with JSON body `{ url, title, room_url, caption, cover_url?, host_user_id?, live_room_id? }` — start recording. `cover_url` 仅在关注列表轮询链路可用：取快手 `follow/living` 返回的 `poster` 字段；其他链路（webRequest / 手动录制）不带该字段，由后端自行兜底。小红书链路会自动附带 `live_room_id`（从直播间 URL 解析），并优先使用 `chrome.storage.local` 中 `xhsLiveRoomHosts` 缓存（被动嗅探写入的 `live_room_id → host_user_id`）补上 `host_user_id`，避免后端把同一主播的每场直播新建为独立房间。该缓存在 `handleXhsLiveInfo()` 入口处**无条件写入**（先于监听开关/监控名单判断），因此即使监听关闭或主播不在名单，只要打开过直播间页面，手动录制也能拿到主播身份。
 
+**检测流的清晰度**：小红书播放地址（如 `..._hcv530.flv`）不含可解析的清晰度信息，`getQualityInfo()` 的 `Fhd/Sd` 关键词只适用于快手。Popup 对 `live*.xhscdn.com` / `.xhscdn.net` 的流调用后端 `POST /api/notify/probe_stream`（`ui/popup.js` 从 `notifyApiUrl` 替换路径推导），用 ffprobe 回填真实 `宽×高 + 编码`，按 URL 去重缓存；探测失败时保持「未知」，不影响手动推送。
+
 **配置生效时机**：`inject.js` 对同一页面状态有发射去重，配置保存后已打开的直播间不会自动重扫。因此 `Options` 保存（`RECHECK_FOLLOWING`）与 Popup「立即检测」（`CHECK_NOW`）都会调用 `rescanXhsTabs()`，通知所有 `xiaohongshu.com` / `redelight.cn` 标签页清空去重并重读 `__INITIAL_STATE__`。若 content script 未注入（扩展刚重载、页面未刷新），消息会静默失败，需要手动刷新页面。`handleXhsLiveInfo()` 的跳过原因会打印 `[XhsDiscovery]` 日志，最近一次结果写入 `chrome.storage.local.xhsLastDiscovery` 并显示在 Popup 平台摘要下方（未命中 / 已上报 / 后端未接受等）。
   - `GET {statusApiUrl}?url={roomUrl}` — check if already recording (and whether `extension_danmaku_enabled` is enabled).
   - `GET {statusApiUrl}?active=true` — fetch active recording rooms (`kuaishou` / `xiaohongshu`) with `extension_danmaku_enabled = true` so `syncBackendActiveRecordings()` can automatically open/close background danmaku tabs.
