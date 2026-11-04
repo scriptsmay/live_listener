@@ -106,7 +106,8 @@ body {
   gap: 12px;
   flex: 1;
   overflow-y: auto;
-  max-height: 400px;
+  /* 不设固定上限：高度由右栏内容决定，保证左右两栏底部对齐 */
+  min-height: 0;
   min-width: 0;
 }
 
