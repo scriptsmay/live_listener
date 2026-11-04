@@ -98,6 +98,16 @@ ui/                            # 用户界面
 
 **前端聚合策略**（规避 MV3 SW 休眠）：弹幕聚合由 `content/content.js`（依托于网页端，天然不会休眠）完成，每 3 秒通过 `ACTIONS.DANMAKU_BATCH` 批量发送给 Background。Background 收到后直接通过 `core/danmaku-session.js` 的 `handleDanmakuBatch()` 转发给后端，不维护任何秒级定时器，彻底规避 SW 休眠导致定时器失效的问题。
 
+**小红书双通道采集（`content/inject.js`）**：
+
+- **主通道 RWP WebSocket**：`msg.t === 4` SYNC 帧的 `b.d.b[].d`（Base64 UTF-8 JSON）。只有在浏览器登录态下才会收到评论帧，且**只有该通道能拿到 `profile.user_id`（uid）**。
+- **兜底通道 DOM MutationObserver**：真实结构为 `.virtual-list-item[custom-key]` → `.msg-wrapper.role-user` → `.msg-content` → `.nickname` + `.content`。
+  - **正文必须读 `.content`**：`.msg-content.textContent` 是「昵称 + 正文」拼接，直接落库会让正文重复昵称；
+  - 表情是 `<img class="emoji-img" alt="[害羞R]">`，需用 `alt` 还原，`textContent` 会丢表情；
+  - **uid 在 DOM 中不存在**（无 `data-user-id`、昵称也不是链接），匿名访问时只能为空；
+  - 系统提示（`来了` / `为主播点赞了` / `关注了主播` / `分享了直播间`）混在同一虚拟列表中：`role-user` 以外的 wrapper 直接丢弃，「为主播点赞了」归类为 `like`，其余系统提示丢弃，禁止当普通评论落库。
+- **去重**：WS 与 DOM 交叉窗口 5s（同一 `user|text`）；DOM 虚拟列表滚动回收/整段重渲染会重新产出历史评论，需额外用 5 分钟窗口 + `custom-key` 稳定消息 ID 抑制；首次 DOM 扫描只登记已挂载历史（`seedOnly`），不发送。
+
 **录制状态感知**（`core/danmaku-session.js`）：弹幕发送严格跟随后端录制状态，未录制时仅缓冲不发送。
 
 - `danmakuSessions` Map 中每个会话有 `isSending` 和 `stopping` 标记

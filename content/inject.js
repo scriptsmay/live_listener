@@ -45,31 +45,85 @@
 
   console.log(TAG, `弹幕拦截脚本已注入 (${VERSION}, host=${location.hostname})`);
 
-  // ========== 小红书弹幕去重滑动窗口（RWP WebSocket + DOM MutationObserver 双通道去重）==========
-  const xhsRecentComments = new Map();
-  const XHS_DEDUP_WINDOW_MS = 3000;
+  // ========== 小红书弹幕去重（RWP WebSocket + DOM MutationObserver 双通道）==========
+  // 同一评论可能被两个通道各采一次（WS 先到、DOM 虚拟列表稍后渲染），因此需要
+  // 跨通道窗口；而 DOM 虚拟列表会滚动回收节点、整段重渲染历史评论，重渲染的
+  // 时间间隔可达数分钟，必须用更长的窗口单独抑制，否则会重复落库。
+  const XHS_CROSS_CHANNEL_WINDOW_MS = 5000;
+  const XHS_DOM_RENDER_WINDOW_MS = 5 * 60 * 1000;
+  const xhsRecentComments = new Map(); // `${user}|${text}` -> ts（跨通道）
+  const xhsDomRenderedComments = new Map(); // `${user}|${text}` -> ts（DOM 重渲染抑制）
+  const xhsDomMessageIds = new Map(); // 稳定消息 id -> ts
   const reportedFlvUrls = new Set();
 
-  function shouldEmitXhsComment(user, text) {
+  /**
+   * 删除 Map 头部过期条目。
+   * Map 保持插入顺序且时间戳单调递增，遇到首个未过期条目即可停止。
+   * @param {Map<string, number>} map
+   * @param {number} now
+   * @param {number} ttl
+   */
+  function pruneExpiredEntries(map, now, ttl) {
+    for (const [k, ts] of map) {
+      if (now - ts <= ttl) break;
+      map.delete(k);
+    }
+  }
+
+  function hasRecentEntry(map, key, now, ttl) {
+    const prev = map.get(key);
+    return prev !== undefined && now - prev <= ttl;
+  }
+
+  /**
+   * 写入/刷新条目并保持插入顺序与时间顺序一致。
+   * Map 对已存在的 key 赋值不会改变其插入位置，会让 pruneExpiredEntries
+   * 的「遇到首个未过期条目即停止」失效，因此先删除再写入。
+   */
+  function touchEntry(map, key, now) {
+    map.delete(key);
+    map.set(key, now);
+  }
+
+  /**
+   * 是否应发送该条评论。
+   * @param {string} user
+   * @param {string} text - 已剥离昵称前缀的正文
+   * @param {{channel?: 'ws'|'dom', messageId?: string}} [options]
+   * @returns {boolean}
+   */
+  function shouldEmitXhsComment(user, text, options = {}) {
     const now = Date.now();
-    for (const [k, ts] of xhsRecentComments) {
-      if (now - ts > XHS_DEDUP_WINDOW_MS) {
-        xhsRecentComments.delete(k);
-      }
-    }
     const key = `${user || '未知'}|${text}`;
-    const prevTs = xhsRecentComments.get(key);
-    if (prevTs !== undefined && now - prevTs <= XHS_DEDUP_WINDOW_MS) {
-      return false;
+    const channel = options.channel || 'ws';
+    const messageId = options.messageId || '';
+
+    pruneExpiredEntries(xhsRecentComments, now, XHS_CROSS_CHANNEL_WINDOW_MS);
+
+    if (channel === 'dom') {
+      pruneExpiredEntries(xhsDomRenderedComments, now, XHS_DOM_RENDER_WINDOW_MS);
+      if (hasRecentEntry(xhsDomRenderedComments, key, now, XHS_DOM_RENDER_WINDOW_MS)) return false;
+
+      if (messageId) {
+        pruneExpiredEntries(xhsDomMessageIds, now, XHS_DOM_RENDER_WINDOW_MS);
+        if (hasRecentEntry(xhsDomMessageIds, messageId, now, XHS_DOM_RENDER_WINDOW_MS)) return false;
+        touchEntry(xhsDomMessageIds, messageId, now);
+      }
+      // 即使随后被跨通道窗口拦下，也要登记，避免重渲染时再次尝试发送
+      touchEntry(xhsDomRenderedComments, key, now);
     }
-    xhsRecentComments.set(key, now);
+
+    if (hasRecentEntry(xhsRecentComments, key, now, XHS_CROSS_CHANNEL_WINDOW_MS)) return false;
+    touchEntry(xhsRecentComments, key, now);
     return true;
   }
 
   function decodeBase64Utf8(b64) {
     if (!b64 || typeof b64 !== 'string') return null;
     try {
-      const binary = atob(b64);
+      // 兼容 URL-safe Base64（- _ 替换 + /）
+      const normalized = b64.replace(/-/g, '+').replace(/_/g, '/');
+      const binary = atob(normalized);
       const bytes = new Uint8Array(binary.length);
       for (let i = 0; i < binary.length; i++) {
         bytes[i] = binary.charCodeAt(i);
@@ -84,8 +138,9 @@
     if (!msg || typeof msg !== 'object') return null;
 
     // RWP 协议：t=4 为 SYNC 服务端推送帧，数据包位于 b.d.b[].d (Base64 UTF-8 JSON)
+    // t 在个别帧里可能是字符串 "4"
     let rawItems = null;
-    if (msg.t === 4 && msg.b && msg.b.d && Array.isArray(msg.b.d.b)) {
+    if (Number(msg.t) === 4 && msg.b && msg.b.d && Array.isArray(msg.b.d.b)) {
       rawItems = msg.b.d.b;
     } else if (msg.customData && typeof msg.customData === 'object') {
       rawItems = [{ decodedObj: msg }];
@@ -97,6 +152,10 @@
     for (const item of rawItems) {
       if (!item || typeof item !== 'object') continue;
       let decodedObj = item.decodedObj || null;
+      if (!decodedObj && item.d && typeof item.d === 'object') {
+        // 少数帧的 d 字段直接是对象而非 Base64 字符串
+        decodedObj = item.d;
+      }
       if (!decodedObj && typeof item.d === 'string') {
         const jsonStr = decodeBase64Utf8(item.d);
         if (!jsonStr) continue;
@@ -119,17 +178,24 @@
           : Date.now();
 
       if (cdType === 'text' || cdType === 'text_message') {
-        const text =
+        const contentField = cd.content;
+        const text = (
           typeof cd.desc === 'string'
-            ? cd.desc.trim()
-            : typeof cd.content === 'string'
-              ? cd.content.trim()
-              : '';
+            ? cd.desc
+            : typeof contentField === 'string'
+              ? contentField
+              : contentField && typeof contentField === 'object'
+                ? (contentField.message ?? contentField.desc ?? '')
+                : (cd.text ?? '')
+        )
+          .toString()
+          .trim();
         if (!text) continue;
-        const profile = cd.profile || cd.user || {};
-        const user = profile.nickname || profile.userName || profile.name || '未知';
-        const userId = profile.user_id || profile.userId || profile.id || '';
-        if (!shouldEmitXhsComment(user, text)) continue;
+        const profile = cd.profile || cd.send_user_info || cd.user || {};
+        const user =
+          profile.nickname || profile.nick_name || profile.userName || profile.user_name || profile.name || '未知';
+        const userId = String(profile.user_id || profile.userId || profile.uid || profile.id || '');
+        if (!shouldEmitXhsComment(user, text, { channel: 'ws' })) continue;
         stats.commentCount++;
         events.push({
           type: 'comment',
@@ -140,10 +206,11 @@
           raw: { source: 'xhs_rwp_ws', type: cdType },
         });
       } else if (cdType === 'gift_comment') {
-        const profile = cd.profile || cd.user || {};
+        const profile = cd.profile || cd.send_user_info || cd.user || {};
         const giftInfo = cd.gift_info || cd.giftInfo || {};
-        const user = profile.nickname || profile.userName || profile.name || '未知';
-        const userId = profile.user_id || profile.userId || profile.id || '';
+        const user =
+          profile.nickname || profile.nick_name || profile.userName || profile.user_name || profile.name || '未知';
+        const userId = String(profile.user_id || profile.userId || profile.uid || profile.id || '');
         const giftName = giftInfo.name || giftInfo.giftName || cd.desc || '未知礼物';
         const giftId = String(giftInfo.gift_id || giftInfo.giftId || giftInfo.id || '');
         const count = Number(giftInfo.count || cd.count || 1) || 1;
@@ -160,10 +227,13 @@
         });
       } else if (cdType === 'praise' || cdType === 'light' || cdType === 'combo_praise') {
         const count = Number(cd.count || 1) || 1;
+        const profile = cd.profile || cd.send_user_info || cd.user || {};
         stats.likeCount += count;
         events.push({
           type: 'like',
           ts_ms: tsMs,
+          user: profile.nickname || profile.nick_name || profile.userName || '',
+          userId: String(profile.user_id || profile.userId || profile.uid || profile.id || ''),
           count,
           raw: { source: 'xhs_rwp_ws', type: cdType },
         });
@@ -1001,6 +1071,25 @@
   function processBinaryMessage(bytes) {
     stats.binaryMessages++;
 
+    // 小红书 RWP 帧在部分环境以二进制帧下发（内容是 UTF-8 JSON 而非 protobuf），
+    // 先尝试按 JSON 解析，失败后再走快手 protobuf 解码。
+    if (isXiaohongshuHost) {
+      try {
+        const text = new TextDecoder('utf-8').decode(bytes);
+        if (text.length >= 10 && (text.includes('"b"') || text.includes('"items"'))) {
+          const msg = JSON.parse(text);
+          const xhsEvents = parseXiaohongshuRwpMessage(msg);
+          if (xhsEvents && xhsEvents.length > 0) {
+            stats.feedPushCount++;
+            postDanmakuEvents(xhsEvents);
+            return;
+          }
+        }
+      } catch (_) {
+        // 非 JSON 二进制帧，继续按 protobuf 处理
+      }
+    }
+
     let decoded;
     try {
       decoded = decodeProto(bytes);
@@ -1509,8 +1598,127 @@
 
   // ========== 小红书 DOM MutationObserver 兜底通道 ==========
   // 当浏览器未登录小红书或 RWP WebSocket 被降级时，通过观察评论区虚拟列表提取弹幕，
-  // 并通过 shouldEmitXhsComment 与 WebSocket 通道共享 3s 滑动窗口去重。
-  function scanXiaohongshuDomComments(root) {
+  // 并通过 shouldEmitXhsComment 与 WebSocket 通道共享去重窗口。
+  //
+  // 注意：评论区虚拟列表里混有三类节点，必须区别对待，否则会污染弹幕分析：
+  // 1. 普通评论 —— `.msg-content` 的 textContent 同时包含昵称节点，需要剥离昵称前缀；
+  // 2. 系统提示 —— 「xxx 来了」「xxx 关注了主播」等，不是用户弹幕，直接丢弃；
+  // 3. 点赞提示 —— 「xxx 为主播点赞了」，归类为 like 而不是 comment。
+  const XHS_SYSTEM_ACTION_PATTERNS = [
+    { type: 'like', re: /^(为主播点赞了|给主播点了赞|点亮了)$/ },
+    { type: 'enter', re: /^(来了|来啦|进入直播间|进入了直播间|加入了直播间|进入直播)$/ },
+    { type: 'follow', re: /^(关注了主播|关注了直播间|关注了TA)$/ },
+    { type: 'share', re: /^(分享了直播间|分享了直播|分享了TA的直播)$/ },
+  ];
+
+  function classifyXhsSystemAction(text) {
+    for (const { type, re } of XHS_SYSTEM_ACTION_PATTERNS) {
+      if (re.test(text)) return type;
+    }
+    return null;
+  }
+
+  /** 从元素自身属性里读取第一个非空值 */
+  function readXhsAttr(el, names) {
+    if (!el || typeof el.getAttribute !== 'function') return '';
+    for (const name of names) {
+      const value = el.getAttribute(name);
+      if (value) return value.trim();
+    }
+    return '';
+  }
+
+  /**
+   * 尝试从 DOM 提取用户 ID。
+   * 优先读 data-* 属性，其次从用户主页链接 `/user/profile/{userId}` 反解。
+   * 小红书评论区 DOM 并不保证携带 uid，取不到时返回空串。
+   */
+  function extractXhsDomUserId(item, nickEl) {
+    const uidAttrs = ['data-user-id', 'data-userid', 'data-uid'];
+    const direct = readXhsAttr(item, uidAttrs) || readXhsAttr(nickEl, uidAttrs);
+    if (direct) return direct;
+
+    const anchors = [];
+    if (item && typeof item.querySelectorAll === 'function') {
+      anchors.push(...item.querySelectorAll('a[href*="/user/profile/"]'));
+    }
+    if (nickEl && typeof nickEl.closest === 'function') {
+      const anchor = nickEl.closest('a[href*="/user/profile/"]');
+      if (anchor) anchors.push(anchor);
+    }
+    for (const anchor of anchors) {
+      const href = anchor.getAttribute('href') || '';
+      const match = href.match(/\/user\/profile\/([^/?#]+)/);
+      if (match) return match[1];
+    }
+    return '';
+  }
+
+  /** 虚拟列表节点上的稳定消息 ID（存在时用于跨重渲染去重） */
+  function extractXhsDomMessageId(item) {
+    return readXhsAttr(item, [
+      'custom-key',
+      'data-key',
+      'data-id',
+      'data-msg-id',
+      'data-message-id',
+      'data-comment-id',
+    ]);
+  }
+
+  /**
+   * 读取元素富文本，表情图片用 alt 还原（如 `[害羞R]`）。
+   * 直接取 textContent 会丢失 `<img class="emoji-img" alt="...">` 的表情内容。
+   */
+  function extractXhsRichText(el) {
+    if (!el) return '';
+    let out = '';
+    for (const node of el.childNodes) {
+      if (node.nodeType === 3) {
+        out += node.nodeValue;
+      } else if (node.nodeType === 1) {
+        if (node.tagName === 'IMG') {
+          out += node.getAttribute('alt') || '';
+        } else {
+          out += extractXhsRichText(node);
+        }
+      }
+    }
+    return out;
+  }
+
+  /**
+   * 提取评论正文并剥离昵称前缀。
+   *
+   * 小红书真实 DOM：`.msg-content` 内含 `<span class="nickname">` 与
+   * `<span class="content">`，正文在 `.content`，但 `.msg-content` 的
+   * textContent 是「昵称 + 正文」拼接。优先直接读 `.content`；若结构变化
+   * 找不到 `.content`，则回退到从 `.msg-content` 中剥离昵称前缀。
+   */
+  function extractXhsDomCommentText(contentEl, rawNick) {
+    const contentBody = contentEl.querySelector('.content');
+    if (contentBody) {
+      return extractXhsRichText(contentBody).trim();
+    }
+
+    let text = extractXhsRichText(contentEl).trim();
+    const nick = String(rawNick || '')
+      .replace(/[：:]\s*$/, '')
+      .trim();
+    if (nick && text.startsWith(nick)) {
+      text = text.slice(nick.length).replace(/^[\s：:]+/, '').trim();
+    }
+    return text;
+  }
+
+  /**
+   * 扫描评论区虚拟列表。
+   *
+   * @param {Element} root
+   * @param {{seedOnly?: boolean}} [options] seedOnly 只登记已挂载的历史评论而不发送
+   *   （首次扫描时使用，避免把开扫前的历史弹幕当成新弹幕落库）
+   */
+  function scanXiaohongshuDomComments(root, options = {}) {
     if (!isXiaohongshuLivePage()) return;
     if (!root || typeof root.querySelectorAll !== 'function') return;
 
@@ -1524,25 +1732,73 @@
       if (!item || typeof item.querySelector !== 'function') continue;
       const contentEl = item.querySelector('.msg-content');
       if (!contentEl) continue;
-      const text = (contentEl.textContent || '').trim();
-      if (!text) continue;
 
       const nickEl = item.querySelector('.nickname');
       const rawNick = nickEl ? (nickEl.textContent || '').trim() : '';
-      const user = rawNick.replace(/[：:]\s*$/, '').trim() || '未知';
-      const commentKey = `${user}|${text}`;
+      let user = rawNick.replace(/[：:]\s*$/, '').trim() || '未知';
+      let text = extractXhsDomCommentText(contentEl, rawNick);
+      if (!text) continue;
 
+      // 个别系统提示节点没有独立的 .nickname，正文形如「昵称 来了」，
+      // 这里把前缀昵称拆出来，使下面的系统提示判定仍能命中
+      if (!rawNick) {
+        const systemSplit = text.match(
+          /^(.+?)\s+(来了|来啦|为主播点赞了|关注了主播|分享了直播间|进入直播间|进入了直播间)$/
+        );
+        if (systemSplit) {
+          user = systemSplit[1].trim();
+          text = systemSplit[2];
+        }
+      }
+
+      const messageId = extractXhsDomMessageId(item);
+      const commentKey = messageId ? `id:${messageId}` : `${user}|${text}`;
       if (item.__ksLastCommentKey === commentKey) continue;
       item.__ksLastCommentKey = commentKey;
 
-      if (!shouldEmitXhsComment(user, text)) continue;
+      // 非 role-user 的 wrapper 是进房/点赞/关注等系统提示节点，不是用户弹幕
+      const wrapperEl = item.querySelector('.msg-wrapper');
+      const wrapperClass = wrapperEl ? String(wrapperEl.className || '') : '';
+      if (wrapperClass && !wrapperClass.includes('role-user')) continue;
+
+      const action = classifyXhsSystemAction(text);
+      const dedupeKey = action === 'like' ? `like:${text}` : text;
+
+      if (options.seedOnly) {
+        // 只登记为已见，避免扩展重载后把当前可见的历史评论当成新弹幕
+        const now = Date.now();
+        if (messageId) touchEntry(xhsDomMessageIds, messageId, now);
+        touchEntry(xhsDomRenderedComments, `${user}|${dedupeKey}`, now);
+        continue;
+      }
+
+      // 进房 / 关注 / 分享属于系统提示，不是用户弹幕
+      if (action === 'enter' || action === 'follow' || action === 'share') continue;
+
+      const userId = extractXhsDomUserId(item, nickEl);
+
+      if (action === 'like') {
+        if (!shouldEmitXhsComment(user, dedupeKey, { channel: 'dom', messageId })) continue;
+        stats.likeCount++;
+        events.push({
+          type: 'like',
+          ts_ms: Date.now(),
+          user,
+          userId,
+          count: 1,
+          raw: { source: 'xhs_dom_observer' },
+        });
+        continue;
+      }
+
+      if (!shouldEmitXhsComment(user, text, { channel: 'dom', messageId })) continue;
 
       stats.commentCount++;
       events.push({
         type: 'comment',
         ts_ms: Date.now(),
         user,
-        userId: '',
+        userId,
         text,
         raw: { source: 'xhs_dom_observer' },
       });
@@ -1564,8 +1820,8 @@
         return;
       }
 
-      // 首次扫描当前已挂载节点
-      scanXiaohongshuDomComments(target);
+      // 首次扫描只登记当前已挂载的历史评论，不回放（它们早于本次采集开始）
+      scanXiaohongshuDomComments(target, { seedOnly: true });
 
       const observer = new MutationObserver((mutations) => {
         if (!isXiaohongshuLivePage()) return;
