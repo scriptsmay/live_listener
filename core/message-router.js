@@ -17,7 +17,7 @@ import {
 import { setDanmakuEnabled } from './danmaku-switch.js';
 import { checkFollowingLivings, checkFollowingNow } from './following-poll.js';
 import { getPollSchedule } from './poll-schedule.js';
-import { isKuaishouLiveRoomUrl, normalizeRoomUrl } from '../lib/url.js';
+import { isSupportedLiveRoomUrl, normalizeRoomUrl } from '../lib/url.js';
 
 export function handleMessage(request, sender, sendResponse) {
   // ===== 来自 popup.js 的消息 =====
@@ -107,21 +107,21 @@ export function handleMessage(request, sender, sendResponse) {
     const tab = sender.tab;
     if (!tab || !tab.title) return;
     const roomUrl = normalizeRoomUrl(tab.url);
-    if (!isKuaishouLiveRoomUrl(roomUrl)) return true;
+    if (!isSupportedLiveRoomUrl(roomUrl)) return true;
     handleContentStream({ url: request.url, title: tab.title, roomUrl });
     return true;
   }
 
   if (action === ACTIONS.DANMAKU_READY) {
     const tab = sender.tab;
-    const roomUrl = normalizeRoomUrl(tab?.url || '');
-    if (!isKuaishouLiveRoomUrl(roomUrl)) return;
+    const roomUrl = normalizeRoomUrl(request.url || tab?.url || '');
+    if (!isSupportedLiveRoomUrl(roomUrl)) return;
     startDanmakuSession(
       roomUrl,
       request.sessionStartMs || Date.now(),
-      tab.id,
+      tab?.id,
       request.url || roomUrl,
-      request.title || tab.title || ''
+      request.title || tab?.title || ''
     );
     checkRecordingAndUpdateSession(roomUrl).catch((err) => {
       console.warn('[Danmaku] danmaku_ready 录制状态检查失败:', err.message);
@@ -131,14 +131,14 @@ export function handleMessage(request, sender, sendResponse) {
 
   if (action === ACTIONS.DANMAKU_BATCH) {
     const tab = sender.tab;
-    const roomUrl = normalizeRoomUrl(tab?.url || '');
-    if (!isKuaishouLiveRoomUrl(roomUrl)) return;
+    const roomUrl = normalizeRoomUrl(request.url || tab?.url || '');
+    if (!isSupportedLiveRoomUrl(roomUrl)) return;
     handleDanmakuBatch(
       roomUrl,
       request.events,
       request.sessionStartMs,
       tab?.id,
-      tab?.title || ''
+      request.title || tab?.title || ''
     );
     return;
   }

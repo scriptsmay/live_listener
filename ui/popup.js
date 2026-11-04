@@ -4,7 +4,7 @@ import {
   isEnvironmentRecording,
   sendRecordingRequest,
 } from '../core/recording.js';
-import { isKuaishouLiveRoomUrl } from '../lib/url.js';
+import { isSupportedLiveRoomUrl } from '../lib/url.js';
 import { ACTIONS } from '../lib/constants.js';
 
 function padTime(value) {
@@ -49,7 +49,7 @@ function renderList() {
     const streams = (result.streams || [])
       .map(normalizeStream)
       .filter(
-        (stream) => !stream.roomUrl || isKuaishouLiveRoomUrl(stream.roomUrl)
+        (stream) => !stream.roomUrl || isSupportedLiveRoomUrl(stream.roomUrl)
       );
     const listDiv = document.getElementById('list');
     const emptyState = document.getElementById('emptyState');
@@ -282,7 +282,10 @@ function renderDanmakuStatus() {
       const room = document.createElement('div');
       room.className = 'danmaku-room';
       room.textContent =
-        session.title || session.roomUrl.split('/u/')[1] || '未知房间';
+        session.title ||
+        session.roomUrl.split('/u/')[1] ||
+        session.roomUrl.split('/livestream/')[1] ||
+        '未知房间';
       room.title = session.roomUrl;
 
       const badge = document.createElement('span');

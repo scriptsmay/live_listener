@@ -28,7 +28,7 @@ import { normalizeDanmakuBatch, filterDanmakuEvents } from '../danmaku/parser.js
 // 与 recording.js 构成 ESM 循环依赖，但双方只在运行时事件回调里互相调用，
 // 模块初始化阶段不触发，函数声明会被提升，因此运行时安全。
 import { isEnvironmentRecording } from './recording.js';
-import { autoDisableDanmakuIfIdle } from './danmaku-switch.js';
+import { autoDisableDanmakuIfIdle, setDanmakuEnabled } from './danmaku-switch.js';
 
 export const DANMAKU_MAX_BUFFER_SIZE = 5000; // 缓冲区最大事件数（防止内存泄漏）
 
@@ -899,6 +899,7 @@ export async function checkRecordingAndUpdateSession(roomUrl) {
 
   if (isRecording && !session.isSending) {
     session.isSending = true;
+    setDanmakuEnabled(true).catch(() => {});
     console.log(`[Danmaku] 录制中，开始发送弹幕: ${roomUrl}`);
     await flushDanmakuBatch(roomUrl).catch(() => {});
     clearDanmakuRetryAlarmIfIdle();

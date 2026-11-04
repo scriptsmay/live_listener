@@ -28,14 +28,14 @@ core/                          # 核心业务逻辑
   poll-schedule.js             # 轮询 alarm 的创建/查询/清除（可被 options 页依赖）
 lib/                           # 公共工具层（纯工具，无业务逻辑）
   http.js                      # fetchJson 统一封装
-  url.js                       # isKuaishouLiveRoomUrl、getLiveRoomUrlFromRequest
+  url.js                       # isKuaishouLiveRoomUrl、isXiaohongshuLiveRoomUrl、isSupportedLiveRoomUrl、normalizeRoomUrl、getLiveRoomUrlFromRequest
   constants.js                 # 消息 action 名 (ACTIONS)、storage key (STORAGE_KEYS)
   logger.js                    # 统一日志封装（支持 debug 开关）
 content/                       # 内容脚本
-  content.js                   # 视频嗅探 + 弹幕聚合（前端 3s buffer）+ 转发中继
-  inject.js                    # MAIN world WebSocket hook（IIFE，不可用 ESM）
+  content.js                   # 视频嗅探 + SPA 路由监听 + 弹幕聚合（前端 3s buffer）+ 转发中继
+  inject.js                    # MAIN world WebSocket hook + 小红书 RWP/DOM 弹幕采集（IIFE，不可用 ESM）
 danmaku/                       # 弹幕解析
-  parser.js                    # 标准化 + 过滤
+  parser.js                    # 标准化 + 过滤 + 小红书 RWP 帧解析 helper
 ui/                            # 用户界面
   popup.html / popup.js / popup.css
   options.html / options.js / options.css
@@ -68,9 +68,9 @@ ui/                            # 用户界面
 
 ## Key constraints
 
-- `host_permissions` limit to `*.kuaishou.com`, `*.yximgs.com`, `localhost:*/*`, `192.168.31.247:*/*`.
-- `content_scripts` 的 `matches` 严格限制在 `*://live.kuaishou.com/*`，`web_accessible_resources` 中 `inject.js` 的 `matches` 同样限制在该域名。
-- `content/content.js` 和 `content/inject.js` 不支持 ESM（manifest content_scripts 不支持 `type: module`，MAIN world 不支持 `import`）。`content.js` 中的 `isLiveRoomPage()` 直接内联（仅 4 行）。
+- `host_permissions` limit to `*.kuaishou.com`, `*.yximgs.com`, `*.xiaohongshu.com`, `*.xhscdn.com`, `*.redelight.cn`, `localhost:*/*`, `192.168.31.247:*/*`.
+- `content_scripts` 的 `matches` 限制在 `*://live.kuaishou.com/*`、`*://*.xiaohongshu.com/*`、`*://*.redelight.cn/*`，`web_accessible_resources` 中 `inject.js` 的 `matches` 同样限制在上述域名。小红书在全站入口（`pc_index.js`）创建并跨路由复用单一 RWP WebSocket，因此 `content.js` 在小红书域名 `document_start` 阶段即注入 `inject.js`。
+- `content/content.js` 和 `content/inject.js` 不支持 ESM（manifest content_scripts 不支持 `type: module`，MAIN world 不支持 `import`）。`content.js` 中的 `isLiveRoomPage()` 与 `normalizeUrlForCompare()` 直接内联。
 - Auto-record triggers only when tab title matches an environment's `followedAuthors` list（`core/stream-detector.js`）。
 - Two sources of stream URL detection:
   - `chrome.webRequest` captures `.flv` URLs; quality selection via `QUALITY_WEIGHTS` with 2-second debounce (`core/stream-detector.js`).

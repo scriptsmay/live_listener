@@ -20,14 +20,176 @@
     giftStructureSample: 5, // 采样打印前 N 条疑似礼物消息的完整结构
   };
 
-  // 用于标识当前页面是快手直播间
+  // 用于标识当前页面是快手直播间或小红书域名
   const isKuaishouLive =
     location.hostname === 'live.kuaishou.com' &&
     /^\/u\/[^/?#]+/.test(location.pathname);
 
-  if (!isKuaishouLive) return;
+  const hostLower = location.hostname.toLowerCase();
+  const isXiaohongshuHost =
+    hostLower === 'xiaohongshu.com' ||
+    hostLower.endsWith('.xiaohongshu.com') ||
+    hostLower === 'redelight.cn' ||
+    hostLower.endsWith('.redelight.cn');
 
-  console.log(TAG, `弹幕拦截脚本已注入 (${VERSION})`);
+  function isXiaohongshuLivePage() {
+    if (!isXiaohongshuHost) return false;
+    const segments = location.pathname.split('/').filter(Boolean);
+    const liveIdx = segments.findIndex((s) => s.toLowerCase() === 'livestream');
+    if (liveIdx < 0) return false;
+    const afterLive = segments.slice(liveIdx + 1).filter((seg) => !/^dynpath/i.test(seg));
+    return afterLive.length > 0 && Boolean(afterLive[0]);
+  }
+
+  if (!isKuaishouLive && !isXiaohongshuHost) return;
+
+  console.log(TAG, `弹幕拦截脚本已注入 (${VERSION}, host=${location.hostname})`);
+
+  // ========== 小红书弹幕去重滑动窗口（RWP WebSocket + DOM MutationObserver 双通道去重）==========
+  const xhsRecentComments = new Map();
+  const XHS_DEDUP_WINDOW_MS = 3000;
+  const reportedFlvUrls = new Set();
+
+  function shouldEmitXhsComment(user, text) {
+    const now = Date.now();
+    for (const [k, ts] of xhsRecentComments) {
+      if (now - ts > XHS_DEDUP_WINDOW_MS) {
+        xhsRecentComments.delete(k);
+      }
+    }
+    const key = `${user || '未知'}|${text}`;
+    const prevTs = xhsRecentComments.get(key);
+    if (prevTs !== undefined && now - prevTs <= XHS_DEDUP_WINDOW_MS) {
+      return false;
+    }
+    xhsRecentComments.set(key, now);
+    return true;
+  }
+
+  function decodeBase64Utf8(b64) {
+    if (!b64 || typeof b64 !== 'string') return null;
+    try {
+      const binary = atob(b64);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) {
+        bytes[i] = binary.charCodeAt(i);
+      }
+      return new TextDecoder('utf-8').decode(bytes);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function parseXiaohongshuRwpMessage(msg) {
+    if (!msg || typeof msg !== 'object') return null;
+
+    // RWP 协议：t=4 为 SYNC 服务端推送帧，数据包位于 b.d.b[].d (Base64 UTF-8 JSON)
+    let rawItems = null;
+    if (msg.t === 4 && msg.b && msg.b.d && Array.isArray(msg.b.d.b)) {
+      rawItems = msg.b.d.b;
+    } else if (msg.customData && typeof msg.customData === 'object') {
+      rawItems = [{ decodedObj: msg }];
+    } else {
+      return null;
+    }
+
+    const events = [];
+    for (const item of rawItems) {
+      if (!item || typeof item !== 'object') continue;
+      let decodedObj = item.decodedObj || null;
+      if (!decodedObj && typeof item.d === 'string') {
+        const jsonStr = decodeBase64Utf8(item.d);
+        if (!jsonStr) continue;
+        try {
+          decodedObj = JSON.parse(jsonStr);
+        } catch (_) {
+          continue;
+        }
+      }
+      if (!decodedObj || typeof decodedObj !== 'object') continue;
+
+      const cd =
+        decodedObj.customData && typeof decodedObj.customData === 'object'
+          ? decodedObj.customData
+          : decodedObj;
+      const cdType = cd.type || '';
+      const tsMs =
+        typeof cd.current_time === 'number' && cd.current_time > 0
+          ? cd.current_time
+          : Date.now();
+
+      if (cdType === 'text' || cdType === 'text_message') {
+        const text =
+          typeof cd.desc === 'string'
+            ? cd.desc.trim()
+            : typeof cd.content === 'string'
+              ? cd.content.trim()
+              : '';
+        if (!text) continue;
+        const profile = cd.profile || cd.user || {};
+        const user = profile.nickname || profile.userName || profile.name || '未知';
+        const userId = profile.user_id || profile.userId || profile.id || '';
+        if (!shouldEmitXhsComment(user, text)) continue;
+        stats.commentCount++;
+        events.push({
+          type: 'comment',
+          ts_ms: tsMs,
+          user,
+          userId,
+          text,
+          raw: { source: 'xhs_rwp_ws', type: cdType },
+        });
+      } else if (cdType === 'gift_comment') {
+        const profile = cd.profile || cd.user || {};
+        const giftInfo = cd.gift_info || cd.giftInfo || {};
+        const user = profile.nickname || profile.userName || profile.name || '未知';
+        const userId = profile.user_id || profile.userId || profile.id || '';
+        const giftName = giftInfo.name || giftInfo.giftName || cd.desc || '未知礼物';
+        const giftId = String(giftInfo.gift_id || giftInfo.giftId || giftInfo.id || '');
+        const count = Number(giftInfo.count || cd.count || 1) || 1;
+        stats.giftCount++;
+        events.push({
+          type: 'gift',
+          ts_ms: tsMs,
+          user,
+          userId,
+          giftName,
+          giftId,
+          count,
+          raw: { source: 'xhs_rwp_ws', type: cdType },
+        });
+      } else if (cdType === 'praise' || cdType === 'light' || cdType === 'combo_praise') {
+        const count = Number(cd.count || 1) || 1;
+        stats.likeCount += count;
+        events.push({
+          type: 'like',
+          ts_ms: tsMs,
+          count,
+          raw: { source: 'xhs_rwp_ws', type: cdType },
+        });
+      }
+    }
+
+    return events.length > 0 ? events : null;
+  }
+
+  function maybeReportXhsFlvUrl(url) {
+    if (!isXiaohongshuHost || typeof url !== 'string') return;
+    if (!url.includes('.flv')) return;
+    const cleanUrl = url.startsWith('//') ? `${location.protocol}${url}` : url;
+    if (!cleanUrl.startsWith('http')) return;
+    if (reportedFlvUrls.has(cleanUrl)) return;
+    reportedFlvUrls.add(cleanUrl);
+    window.postMessage(
+      {
+        source: 'ks-danmaku-inject',
+        type: 'flv_stream_url',
+        url: cleanUrl,
+        timestamp: Date.now(),
+      },
+      '*'
+    );
+  }
 
   // 保存原始引用
   const OriginalWebSocket = window.WebSocket;
@@ -990,20 +1152,26 @@
       ? new OriginalWebSocket(url, protocols)
       : new OriginalWebSocket(url);
 
-    // 判断是否快手相关
-    const isKsWs =
+    // 判断是否快手或小红书相关 WebSocket
+    const isTargetWs =
       typeof url === 'string' &&
-      (url.includes('kuaishou') || url.includes('kwai') || url.includes('yximgs') || url.includes('live'));
+      (url.includes('kuaishou') ||
+        url.includes('kwai') ||
+        url.includes('yximgs') ||
+        url.includes('xiaohongshu') ||
+        url.includes('apppush-rws') ||
+        url.includes('redelight') ||
+        url.includes('live'));
 
     const urlPreview = typeof url === 'string' ? url.slice(0, 120) : String(url);
 
-    if (isKsWs) {
+    if (isTargetWs) {
       stats.ksWsConnections++;
       trackedInstances.add(ws);
-      console.log(TAG, `[WS-Constructor] 快手 WebSocket #${stats.ksWsConnections}: ${urlPreview}`);
+      console.log(TAG, `[WS-Constructor] 目标 WebSocket #${stats.ksWsConnections}: ${urlPreview}`);
       console.log(TAG, `  binaryType=${ws.binaryType}, readyState=${ws.readyState}, protocols=${ws.protocol || '(none)'}`);
     } else {
-      console.log(TAG, `[WS-Constructor] 非快手 WebSocket #${stats.wsConstructorCalls}: ${urlPreview}`);
+      console.log(TAG, `[WS-Constructor] 其他 WebSocket #${stats.wsConstructorCalls}: ${urlPreview}`);
     }
 
     return ws;
@@ -1025,10 +1193,13 @@
   window.fetch = function (input, init) {
     stats.fetchCalls++;
     const url = typeof input === 'string' ? input : (input && input.url ? input.url : '');
+    if (url) {
+      maybeReportXhsFlvUrl(url);
+    }
     // 只打印疑似弹幕相关的请求
     if (url && (url.includes('danmu') || url.includes('danmaku') || url.includes('feed') ||
                 url.includes('comment') || url.includes('live') || url.includes('gift') ||
-                url.includes('kuaishou') || url.includes('kwai'))) {
+                url.includes('kuaishou') || url.includes('kwai') || url.includes('xiaohongshu'))) {
       console.log(TAG, `[Fetch] #${stats.fetchCalls}: ${url.slice(0, 120)}`, init ? init.method || 'GET' : 'GET');
     }
     return originalFetch.apply(this, arguments);
@@ -1037,10 +1208,13 @@
   const originalXHROpen = XMLHttpRequest.prototype.open;
   XMLHttpRequest.prototype.open = function (method, url) {
     stats.xhrCalls++;
+    if (url) {
+      maybeReportXhsFlvUrl(String(url));
+    }
     if (url && (url.includes('danmu') || url.includes('danmaku') || url.includes('feed') ||
                 url.includes('comment') || url.includes('live') || url.includes('gift') ||
-                url.includes('kuaishou') || url.includes('kwai'))) {
-      console.log(TAG, `[XHR] #${stats.xhrCalls}: ${method} ${url.slice(0, 120)}`);
+                url.includes('kuaishou') || url.includes('kwai') || url.includes('xiaohongshu'))) {
+      console.log(TAG, `[XHR] #${stats.xhrCalls}: ${method} ${String(url).slice(0, 120)}`);
     }
     return originalXHROpen.apply(this, arguments);
   };
@@ -1101,6 +1275,13 @@
 
   function parseJsonMessage(msg) {
     if (!msg || typeof msg !== 'object') return null;
+
+    if (isXiaohongshuHost) {
+      const xhsEvents = parseXiaohongshuRwpMessage(msg);
+      if (xhsEvents && xhsEvents.length > 0) {
+        return xhsEvents;
+      }
+    }
 
     const type = msg.type || '';
 
@@ -1325,6 +1506,105 @@
       }
     }
   }, 15000);
+
+  // ========== 小红书 DOM MutationObserver 兜底通道 ==========
+  // 当浏览器未登录小红书或 RWP WebSocket 被降级时，通过观察评论区虚拟列表提取弹幕，
+  // 并通过 shouldEmitXhsComment 与 WebSocket 通道共享 3s 滑动窗口去重。
+  function scanXiaohongshuDomComments(root) {
+    if (!isXiaohongshuLivePage()) return;
+    if (!root || typeof root.querySelectorAll !== 'function') return;
+
+    const items = root.classList && root.classList.contains('virtual-list-item')
+      ? [root]
+      : root.querySelectorAll('.virtual-list-item');
+    if (!items || items.length === 0) return;
+
+    const events = [];
+    for (const item of items) {
+      if (!item || typeof item.querySelector !== 'function') continue;
+      const contentEl = item.querySelector('.msg-content');
+      if (!contentEl) continue;
+      const text = (contentEl.textContent || '').trim();
+      if (!text) continue;
+
+      const nickEl = item.querySelector('.nickname');
+      const rawNick = nickEl ? (nickEl.textContent || '').trim() : '';
+      const user = rawNick.replace(/[：:]\s*$/, '').trim() || '未知';
+      const commentKey = `${user}|${text}`;
+
+      if (item.__ksLastCommentKey === commentKey) continue;
+      item.__ksLastCommentKey = commentKey;
+
+      if (!shouldEmitXhsComment(user, text)) continue;
+
+      stats.commentCount++;
+      events.push({
+        type: 'comment',
+        ts_ms: Date.now(),
+        user,
+        userId: '',
+        text,
+        raw: { source: 'xhs_dom_observer' },
+      });
+    }
+
+    if (events.length > 0) {
+      stats.feedPushCount++;
+      postDanmakuEvents(events);
+    }
+  }
+
+  function setupXiaohongshuDomObserver() {
+    if (!isXiaohongshuHost || typeof MutationObserver === 'undefined') return;
+
+    const startObserve = () => {
+      const target = document.body || document.documentElement;
+      if (!target) {
+        setTimeout(startObserve, 200);
+        return;
+      }
+
+      // 首次扫描当前已挂载节点
+      scanXiaohongshuDomComments(target);
+
+      const observer = new MutationObserver((mutations) => {
+        if (!isXiaohongshuLivePage()) return;
+        for (const mutation of mutations) {
+          if (mutation.type === 'childList' && mutation.addedNodes.length > 0) {
+            for (const node of mutation.addedNodes) {
+              if (node && node.nodeType === 1) {
+                scanXiaohongshuDomComments(node);
+              }
+            }
+          } else if (mutation.type === 'characterData' && mutation.target && mutation.target.parentElement) {
+            const item = mutation.target.parentElement.closest
+              ? mutation.target.parentElement.closest('.virtual-list-item')
+              : null;
+            if (item) {
+              scanXiaohongshuDomComments(item);
+            }
+          }
+        }
+      });
+
+      observer.observe(target, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+      });
+      console.log(TAG, '小红书评论区 DOM MutationObserver 兜底已就绪');
+    };
+
+    if (document.body) {
+      startObserve();
+    } else {
+      window.addEventListener('DOMContentLoaded', startObserve, { once: true });
+    }
+  }
+
+  if (isXiaohongshuHost) {
+    setupXiaohongshuDomObserver();
+  }
 
   // 通知 content.js 注入成功
   window.postMessage(

@@ -7,7 +7,7 @@ import { getState, atomicAppendStream } from './state.js';
 import { emit, EVENTS } from './event-bus.js';
 import { getConfig } from './config.js';
 import { getQualityWeight } from './stream-quality.js';
-import { isKuaishouLiveRoomUrl, getLiveRoomUrlFromRequest, normalizeRoomUrl } from '../lib/url.js';
+import { isSupportedLiveRoomUrl, getLiveRoomUrlFromRequest, normalizeRoomUrl } from '../lib/url.js';
 
 /**
  * webRequest onBeforeRequest 入口
@@ -40,7 +40,7 @@ export async function handleWebRequest(details) {
 
   // 归一化后作为房间唯一标识，与后端 rooms.room_url 保持一致
   const roomUrl = normalizeRoomUrl(getLiveRoomUrlFromRequest(details, tab) || '');
-  if (!isKuaishouLiveRoomUrl(roomUrl)) return;
+  if (!isSupportedLiveRoomUrl(roomUrl)) return;
 
   state.lastUrl = details.url;
 
@@ -126,7 +126,7 @@ export function handleContentStream(stream) {
  * 延迟 2 秒等待所有清晰度流冒出来后，发射 STREAM_DETECTED 事件
  */
 function autoChooseBest(details, targetEnvs, roomUrl, title) {
-  if (!isKuaishouLiveRoomUrl(roomUrl)) return;
+  if (!isSupportedLiveRoomUrl(roomUrl)) return;
 
   const state = getState();
   const key = roomUrl;

@@ -106,3 +106,150 @@ export function filterDanmakuEvents(events, options = {}) {
     return true;
   });
 }
+
+/**
+ * UTF-8 Base64 解码（兼容浏览器 atob 与 Node Buffer）
+ * @param {string} b64
+ * @returns {string}
+ */
+export function decodeBase64Utf8(b64) {
+  if (typeof b64 !== 'string' || !b64) return '';
+  try {
+    if (typeof Buffer !== 'undefined') {
+      return Buffer.from(b64, 'base64').toString('utf-8');
+    }
+    const binary = atob(b64);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+    return new TextDecoder('utf-8').decode(bytes);
+  } catch (_) {
+    return '';
+  }
+}
+
+/**
+ * 解析小红书 RWP WebSocket 下行帧（t=4 SYNC 帧或 data.items 兼容帧）
+ *
+ * 外层格式：
+ * { v: 1, t: 4, m: "...", b: { d: { a: 0, biz: "live", t: 1762246800123, b: [{ d: "<base64>", m: "..." }] } } }
+ *
+ * @param {string|Object} frameInput - WebSocket 原始文本或已解析 JSON 对象
+ * @returns {Array<Object>} 提取出的原始弹幕事件数组
+ */
+export function parseXiaohongshuWsFrame(frameInput) {
+  let outer = frameInput;
+  if (typeof frameInput === 'string') {
+    if (
+      frameInput.length < 10 ||
+      (!frameInput.includes('"b"') && !frameInput.includes('"items"'))
+    ) {
+      return [];
+    }
+    try {
+      outer = JSON.parse(frameInput);
+    } catch (_) {
+      return [];
+    }
+  }
+
+  if (!outer || typeof outer !== 'object') return [];
+
+  const syncData = outer.b && outer.b.d;
+  const items = Array.isArray(syncData?.b)
+    ? syncData.b
+    : Array.isArray(outer.data?.items)
+      ? outer.data.items
+      : null;
+
+  if (!items || items.length === 0) return [];
+
+  const frameTs = Number(syncData?.t) || 0;
+  const events = [];
+
+  for (const item of items) {
+    const b64 = item && (typeof item.d === 'string' ? item.d : typeof item.b === 'string' ? item.b : '');
+    if (!b64) continue;
+
+    const decodedStr = decodeBase64Utf8(b64);
+    if (!decodedStr) continue;
+
+    let decoded;
+    try {
+      decoded = JSON.parse(decodedStr);
+    } catch (_) {
+      continue;
+    }
+
+    let cd = decoded?.customData ?? decoded?.data ?? decoded;
+    if (typeof cd === 'string') {
+      try {
+        cd = JSON.parse(cd);
+      } catch (_) {
+        continue;
+      }
+    }
+    if (!cd || typeof cd !== 'object') continue;
+
+    const msgType = String(cd.type || '');
+    const ts =
+      Number(cd.current_time) ||
+      Number(decoded?.ts) ||
+      frameTs ||
+      Date.now();
+    const profile = cd.profile || cd.send_user_info || cd.user || {};
+    const user = String(profile.nickname || profile.nick_name || profile.userName || '').trim();
+    const userId = String(profile.user_id || profile.userId || '');
+
+    if (msgType === 'text' || msgType === 'text_message') {
+      const text = String(
+        cd.desc ?? cd.content?.message ?? cd.content?.desc ?? cd.text ?? ''
+      ).trim();
+      if (!text) continue;
+      events.push({
+        type: 'comment',
+        ts_ms: ts,
+        user: user || '匿名',
+        userId,
+        text,
+        raw: {
+          source: 'xhs_rwp_ws',
+          commentId: String(cd.commentId || decoded?.msgId || item.m || ''),
+        },
+      });
+    } else if (msgType === 'gift_comment') {
+      const giftInfo = cd.gift_info || {};
+      const giftName = String(giftInfo.name || cd.giftName || cd.desc || '礼物').trim();
+      const giftId = String(giftInfo.gift_id || giftInfo.id || cd.giftId || '');
+      const count = Math.max(1, parseInt(giftInfo.count ?? cd.giftCount ?? 1, 10) || 1);
+      events.push({
+        type: 'gift',
+        ts_ms: ts,
+        user: user || '匿名',
+        userId,
+        giftName,
+        giftId,
+        count,
+        raw: {
+          source: 'xhs_rwp_ws',
+          commentId: String(cd.commentId || decoded?.msgId || item.m || ''),
+        },
+      });
+    } else if (msgType === 'praise' || msgType === 'light' || msgType === 'combo_praise') {
+      const count = Math.max(1, parseInt(cd.count ?? 1, 10) || 1);
+      events.push({
+        type: 'like',
+        ts_ms: ts,
+        user,
+        userId,
+        count,
+        raw: {
+          source: 'xhs_rwp_ws',
+        },
+      });
+    }
+  }
+
+  return events;
+}

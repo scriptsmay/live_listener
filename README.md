@@ -1,6 +1,6 @@
 # Live Stream Sniffer
 
-Manifest V3 Chrome 扩展，用于监测快手直播流并推送到本地录制后端。
+Manifest V3 Chrome 扩展，用于监测快手与小红书直播流、采集实时弹幕并推送到本地录制后端。
 
 ## 安装
 
@@ -27,7 +27,10 @@ Manifest V3 Chrome 扩展，用于监测快手直播流并推送到本地录制�
 
 ## 弹幕采集
 
-扩展通过 `inject.js` 注入快手直播间页面，拦截 WebSocket 消息捕获弹幕（protobuf + JSON 双模式），经 `content.js` 转发给 `background.js`，每 5 秒批量发送到后端。
+扩展通过 `inject.js` 注入快手与小红书直播间页面捕获实时弹幕，经 `content.js` 聚合（每 3 秒一批）转发给 `background.js` 推送至后端：
+
+- **快手（`live.kuaishou.com/u/{id}`）**：拦截 WebSocket 消息（protobuf 二进制 + JSON 双模式）。
+- **小红书（`www.xiaohongshu.com/livestream/{roomId}`）**：采用双保险去重采集（RWP WebSocket `wss://apppush-rws.xiaohongshu.com/rwp` 的 `t=4` SYNC 帧 Base64 UTF-8 解码 + 评论区 `.virtual-list-item` DOM `MutationObserver` 兜底，共享 3 秒滑动窗口去重）。支持从首页或个人主页通过 SPA 软路由进入直播间。
 
 **录制状态感知**：弹幕发送与后端录制状态联动，仅在录制中时才向后端推送弹幕数据：
 

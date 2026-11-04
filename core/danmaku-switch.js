@@ -13,9 +13,11 @@ export async function setDanmakuEnabled(enabled) {
   await chrome.storage.sync.set({ danmakuEnabled: enabled });
   console.log(`[Danmaku] 弹幕采集开关已${enabled ? '开启' : '关闭'}`);
 
-  // 通知所有快手直播间标签页
+  // 通知所有快手与小红书直播间标签页
   try {
-    const tabs = await chrome.tabs.query({ url: '*://live.kuaishou.com/*' });
+    const tabs = await chrome.tabs.query({
+      url: ['*://live.kuaishou.com/*', '*://*.xiaohongshu.com/*', '*://*.redelight.cn/*'],
+    });
     for (const tab of tabs) {
       chrome.tabs
         .sendMessage(tab.id, {
