@@ -10,6 +10,7 @@ import {
 import { getConfig, LIVING_API_URL } from './config.js';
 import { fetchJson } from '../lib/http.js';
 import { isEnvironmentRecording, sendToEnvironments } from './recording.js';
+import { syncBackendActiveRecordings } from './danmaku-session.js';
 import { POLL_ALARM_NAME } from '../lib/constants.js';
 import { createPollAlarm, clearPollAlarm } from './poll-schedule.js';
 
@@ -150,6 +151,12 @@ async function runFollowingCheck({ manual }) {
     const config = await getConfig();
     const enabledEnvs = getEnabledEnvironments(config);
 
+    // 同步服务端开启了“浏览器插件弹幕采集”的在播录制房间（快手 / 小红书），
+    // 不受快手 Cookie、关注列表或单房间 activeRecordingRoomUrl 短路影响
+    await syncBackendActiveRecordings(enabledEnvs).catch((err) => {
+      console.warn('[FollowingPoll] 同步后端活跃弹幕录制任务失败:', err);
+    });
+
     if (state.activeRecordingRoomUrl) {
       let anyRecording = false;
       for (const env of enabledEnvs) {
@@ -246,6 +253,9 @@ async function runFollowingCheck({ manual }) {
 export function initAlarms() {
   // 每次 SW 启动都重建 alarm（根因修复：解决 alarm 静默丢失导致停止轮询）
   createPollAlarm();
+
+  // SW 启动时立即同步一次服务端活跃弹幕采集任务，无需等待首个 1 分钟 alarm
+  syncBackendActiveRecordings().catch(() => {});
 
   chrome.runtime.onInstalled.addListener(() => {
     // 首次安装/更新时立即跑一次，不用等下一分钟

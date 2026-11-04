@@ -99,6 +99,7 @@ stateRestored
       self.__debug = self.__debug || {};
       self.__debug.probeAutoOpenedTab = debugProbeAutoOpenedTab;
       self.__debug.probeAutoOpenedTabIfRecording = probeAutoOpenedTabIfRecording;
+      self.__debug.syncBackendActiveRecordings = syncBackendActiveRecordings;
     }
   })
   .catch(() => {});
@@ -924,6 +925,119 @@ export async function checkRecordingAndUpdateSession(roomUrl) {
   // 网络 await 期间会话可能已被 stop，重新检查
   if (!state.danmakuSessions.has(roomUrl)) return false;
   return session.isSending;
+}
+
+// ===== 服务端活跃弹幕录制任务同步 =====
+
+let _syncActiveInFlight = null;
+
+/**
+ * 从已启用环境的后端同步开启了“浏览器插件弹幕采集”的在播录制房间（GET /api/notify/status?active=true），
+ * 自动打开后台标签页采集弹幕，并在录制结束或开关关闭后自动关闭后台标签页。
+ *
+ * - 若用户已手动打开同一直播间标签页，直接向该标签页发送 START_DANMAKU，避免重复新建后台标签页；
+ * - 若无已打开标签页，调用 ensureDanmakuTab(roomUrl) 自动创建并维护后台标签页健康；
+ * - 若此前由扩展自动打开的标签页不再处于任何已启用环境的活跃弹幕采集列表中（且至少一个环境成功响应），
+ *   调用 stopDanmakuSession(roomUrl, true) + closeAutoOpenedTab(roomUrl) 自动收尾。
+ *
+ * @param {Array} [enabledEnvs] - 已启用的环境配置列表（不传则自动从 getConfig() 读取）
+ * @returns {Promise<{synced: boolean, activeRooms: string[]}>}
+ */
+export function syncBackendActiveRecordings(enabledEnvs) {
+  if (_syncActiveInFlight) {
+    return _syncActiveInFlight;
+  }
+  _syncActiveInFlight = runSyncBackendActiveRecordings(enabledEnvs).finally(() => {
+    _syncActiveInFlight = null;
+  });
+  return _syncActiveInFlight;
+}
+
+async function runSyncBackendActiveRecordings(enabledEnvs) {
+  await stateRestored;
+  const config = await getConfig();
+  const envs = Array.isArray(enabledEnvs)
+    ? enabledEnvs
+    : (config.environments || []).filter((env) => env.enabled);
+
+  if (envs.length === 0) {
+    return { synced: false, activeRooms: [] };
+  }
+
+  const activeRoomUrls = new Set();
+  let anyEnvSucceeded = false;
+
+  for (const env of envs) {
+    if (!env.enabled || !env.statusApiUrl) continue;
+    try {
+      const sep = env.statusApiUrl.includes('?') ? '&' : '?';
+      const result = await fetchJson(`${env.statusApiUrl}${sep}active=true`);
+      if (result.ok && Array.isArray(result.data?.data?.rooms)) {
+        anyEnvSucceeded = true;
+        for (const room of result.data.data.rooms) {
+          if (room?.extension_danmaku_enabled === false) continue;
+          const normalized = normalizeRoomUrl(room?.room_url || '');
+          if (normalized) {
+            activeRoomUrls.add(normalized);
+          }
+        }
+      }
+    } catch (err) {
+      console.warn(
+        `[Danmaku] 同步活跃录制列表失败 [${env.name}] ${env.statusApiUrl}?active=true:`,
+        err.message
+      );
+    }
+  }
+
+  if (!anyEnvSucceeded) {
+    return { synced: false, activeRooms: [] };
+  }
+
+  const state = getState();
+
+  if (activeRoomUrls.size > 0) {
+    await setDanmakuEnabled(true).catch(() => {});
+  }
+
+  // 查询当前已打开的受支持直播间标签页，用于识别用户手动打开的标签页（避免重复开后台标签页）
+  let openTabs = [];
+  try {
+    openTabs = await chrome.tabs.query({
+      url: ['*://live.kuaishou.com/*', '*://*.xiaohongshu.com/*', '*://*.redelight.cn/*'],
+    });
+  } catch (_) {
+    openTabs = [];
+  }
+
+  for (const roomUrl of activeRoomUrls) {
+    activateDanmakuForRoom(roomUrl);
+    flushDanmakuBatch(roomUrl).catch(() => {});
+
+    const autoTabId = state.autoOpenedTabs.get(roomUrl);
+    const manualTab = openTabs.find(
+      (t) => t.id !== autoTabId && normalizeRoomUrl(t.url || '') === roomUrl
+    );
+
+    if (manualTab && autoTabId === undefined) {
+      chrome.tabs
+        .sendMessage(manualTab.id, { action: ACTIONS.START_DANMAKU })
+        .catch(() => {});
+      continue;
+    }
+
+    await ensureDanmakuTab(roomUrl);
+  }
+
+  // 关闭不再处于活跃弹幕采集列表中的自动后台标签页
+  for (const [roomUrl] of state.autoOpenedTabs) {
+    if (!activeRoomUrls.has(roomUrl)) {
+      await stopDanmakuSession(roomUrl, true).catch(() => {});
+      await closeAutoOpenedTab(roomUrl).catch(() => {});
+    }
+  }
+
+  return { synced: true, activeRooms: Array.from(activeRoomUrls) };
 }
 
 // ===== 录制请求联动 =====

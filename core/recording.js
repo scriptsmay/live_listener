@@ -33,20 +33,35 @@ function findEnvironmentsByTitle(config, title) {
 // ===== 对外暴露 =====
 
 /**
- * 查询指定环境是否正在录制
- * 从 popup.js 和 background.js 移入（依赖 env.statusApiUrl，属于业务逻辑）
+ * 查询指定环境直播间的录制状态与扩展弹幕开关
+ * @returns {Promise<{isRecording: boolean, extensionDanmakuEnabled: boolean}>}
  */
-export async function isEnvironmentRecording(env, roomUrl) {
-  if (!roomUrl) return false;
+export async function getEnvironmentRoomStatus(env, roomUrl) {
+  if (!roomUrl) {
+    return { isRecording: false, extensionDanmakuEnabled: false };
+  }
   const result = await fetchJson(
     `${env.statusApiUrl}?url=${encodeURIComponent(roomUrl)}`
   );
   const data = result.data || {};
-  return (
+  const isRecording = Boolean(
     result.ok &&
-    data.exists &&
-    (data.data?.status === 'recording' || data.data?.status === 'paused')
+      data.exists &&
+      (data.data?.status === 'recording' || data.data?.status === 'paused')
   );
+  const extensionDanmakuEnabled =
+    data.data?.extension_danmaku_enabled === true ||
+    data.data?.room?.extension_danmaku_enabled === true;
+  return { isRecording, extensionDanmakuEnabled };
+}
+
+/**
+ * 查询指定环境是否正在录制
+ * 从 popup.js 和 background.js 移入（依赖 env.statusApiUrl，属于业务逻辑）
+ */
+export async function isEnvironmentRecording(env, roomUrl) {
+  const { isRecording } = await getEnvironmentRoomStatus(env, roomUrl);
+  return isRecording;
 }
 
 /**
@@ -85,12 +100,15 @@ export async function sendToEnvironments(
     // 先查后端状态，已在录制则跳过
     let alreadyRecording = false;
     try {
-      if (await isEnvironmentRecording(env, roomUrl)) {
+      const roomStatus = await getEnvironmentRoomStatus(env, roomUrl);
+      if (roomStatus.isRecording) {
         console.log(`[Recording][${env.name}] 已在录制中，跳过: ${roomUrl}`);
         persistActiveRecording(roomUrl);
         activateDanmakuForRoom(roomUrl);
-        setDanmakuEnabled(true);
-        ensureDanmakuTab(roomUrl);
+        if (roomStatus.extensionDanmakuEnabled) {
+          setDanmakuEnabled(true);
+          ensureDanmakuTab(roomUrl);
+        }
         activeCount++;
         alreadyRecording = true;
       }
@@ -117,8 +135,10 @@ export async function sendToEnvironments(
       if (result.ok) {
         persistActiveRecording(roomUrl);
         activateDanmakuForRoom(roomUrl);
-        setDanmakuEnabled(true);
-        ensureDanmakuTab(roomUrl);
+        if (result.data?.data?.extension_danmaku_enabled === true) {
+          setDanmakuEnabled(true);
+          ensureDanmakuTab(roomUrl);
+        }
         activeCount++;
         console.log(`[Recording][${env.name}] 录制请求成功: ${roomUrl}`);
       } else if (result.data) {

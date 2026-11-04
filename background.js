@@ -37,10 +37,16 @@ chrome.notifications.onClicked.addListener((notifId) => {
 
 // 暴露调试接口（供 Service Worker Console 手动操作）
 import { getState } from './core/state.js';
-import { checkRecordingAndUpdateSession, getDanmakuStatus, retryAllBufferingSessions } from './core/danmaku-session.js';
+import {
+  checkRecordingAndUpdateSession,
+  getDanmakuStatus,
+  retryAllBufferingSessions,
+  syncBackendActiveRecordings,
+} from './core/danmaku-session.js';
 self.__debug = {
   getState,
   getDanmakuStatus,
   checkRecordingAndUpdateSession,
   retryAllBufferingSessions,
+  syncBackendActiveRecordings,
 };

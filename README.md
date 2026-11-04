@@ -22,7 +22,7 @@ Manifest V3 Chrome 扩展，用于监测快手与小红书直播流、采集实�
 接口后缀由扩展固定拼接：
 
 - 录制接口：`POST {baseUrl}/api/notify/live_download`
-- 状态接口：`GET {baseUrl}/api/notify/status?url={roomUrl}`
+- 状态接口：`GET {baseUrl}/api/notify/status?url={roomUrl}`（单房间）与 `GET {baseUrl}/api/notify/status?active=true`（服务端活跃弹幕采集任务列表）
 - 弹幕接口：`POST {baseUrl}/api/danmaku/batch`
 
 ## 弹幕采集
@@ -31,6 +31,7 @@ Manifest V3 Chrome 扩展，用于监测快手与小红书直播流、采集实�
 
 - **快手（`live.kuaishou.com/u/{id}`）**：拦截 WebSocket 消息（protobuf 二进制 + JSON 双模式）。
 - **小红书（`www.xiaohongshu.com/livestream/{roomId}`）**：采用双保险去重采集（RWP WebSocket `wss://apppush-rws.xiaohongshu.com/rwp` 的 `t=4` SYNC 帧 Base64 UTF-8 解码 + 评论区 `.virtual-list-item` DOM `MutationObserver` 兜底，共享 3 秒滑动窗口去重）。支持从首页或个人主页通过 SPA 软路由进入直播间。
+- **服务端驱动自动开/关后台标签页**：在 K-Recorder 后端将某直播间开启「浏览器插件弹幕采集」（`rooms.extension_danmaku_enabled = true`）后，扩展会在 SW 启动、每分钟定时轮询及手动「立即检测」时调用 `GET {statusApiUrl}?active=true`：若用户尚未手动打开该直播间，则自动在后台静默打开标签页采集弹幕；当录制结束或关闭该开关时，自动关闭扩展创建的后台标签页。
 
 **录制状态感知**：弹幕发送与后端录制状态联动，仅在录制中时才向后端推送弹幕数据：
 
