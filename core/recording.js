@@ -90,7 +90,8 @@ export async function sendToEnvironments(
   title,
   roomUrl,
   caption = '',
-  coverUrl = ''
+  coverUrl = '',
+  extra = {}
 ) {
   let activeCount = 0;
 
@@ -127,6 +128,9 @@ export async function sendToEnvironments(
         caption,
       };
       if (coverUrl) body.cover_url = coverUrl;
+      // 小红书目标身份与本场场次标识（后端 RoomTargetService 用于归并稳定目标）
+      if (extra.hostUserId) body.host_user_id = extra.hostUserId;
+      if (extra.liveRoomId) body.live_room_id = extra.liveRoomId;
       const result = await fetchJson(env.notifyApiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -170,6 +174,7 @@ export async function sendToEnvironments(
     chrome.action.setBadgeText({ text: 'HIGH' });
     chrome.storage.local.set({ [`status_${url}`]: 'auto-recorded' });
   }
+  return activeCount;
 }
 
 export async function sendToBackend(url, title, roomUrl, caption = '') {

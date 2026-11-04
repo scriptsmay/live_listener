@@ -131,10 +131,18 @@ function renderEnvCard(env) {
   authors.placeholder = 'KSG无言';
   authors.value = (env.followedAuthors || []).join('\n');
 
+  const xhsAuthors = document.createElement('textarea');
+  xhsAuthors.className = 'env-xhs-authors';
+  xhsAuthors.rows = 5;
+  xhsAuthors.placeholder =
+    '531916795（小红书号）\n5c2f2f8c000000000701d3dd（用户ID）\n昵称|531916795（昵称|ID，可选）';
+  xhsAuthors.value = (env.xiaohongshuAuthors || []).join('\n');
+
   card.append(
     header,
     createEnvField('服务地址（Base URL）', baseUrl),
-    createEnvField('关注的主播（每行一个）', authors)
+    createEnvField('关注的主播（快手，每行一个）', authors),
+    createEnvField('小红书监控（每行一个：小红书号 / 用户ID / 主页链接）', xhsAuthors)
   );
   return card;
 }
@@ -195,6 +203,9 @@ function getEnvData(env, card) {
     baseUrl: normalizeBaseUrl(card.querySelector('.env-base-url').value),
     followedAuthors: parseAuthors(
       card.querySelector('.env-followed-authors').value
+    ),
+    xiaohongshuAuthors: parseAuthors(
+      card.querySelector('.env-xhs-authors').value
     ),
   };
 }

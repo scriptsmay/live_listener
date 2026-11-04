@@ -17,6 +17,7 @@ import {
 import { setDanmakuEnabled } from './danmaku-switch.js';
 import { checkFollowingLivings, checkFollowingNow } from './following-poll.js';
 import { getPollSchedule } from './poll-schedule.js';
+import { handleXhsLiveInfo } from './xhs-live-discovery.js';
 import { isSupportedLiveRoomUrl, normalizeRoomUrl } from '../lib/url.js';
 
 export function handleMessage(request, sender, sendResponse) {
@@ -153,6 +154,13 @@ export function handleMessage(request, sender, sendResponse) {
         senderTabUrl: sender.tab?.url,
       }).catch(() => {});
     }
+    return;
+  }
+
+  if (action === ACTIONS.XHS_LIVE_INFO) {
+    handleXhsLiveInfo(request.items).catch((err) => {
+      console.warn('[XhsDiscovery] 处理页面直播信息失败:', err.message);
+    });
     return;
   }
 }

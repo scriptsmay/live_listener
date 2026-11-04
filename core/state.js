@@ -69,6 +69,11 @@ const state = {
 
   // 关注轮询
   notifiedRooms: new Set(),
+
+  // 小红书页面直播信息发现：正在上报中的 roomId，防止同一响应多次触发并发上报
+  xhsDiscoveryInFlight: new Set(),
+  // 上报失败（后端拒绝/网络错误）后的冷却时间，避免页面每次响应都重试
+  xhsDiscoveryCooldown: new Map(), // roomId -> 失败时间戳
 };
 
 export function getState() { return state; }

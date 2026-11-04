@@ -4,8 +4,18 @@ import {
   isEnvironmentRecording,
   sendRecordingRequest,
 } from '../core/recording.js';
+import { fetchJson } from '../lib/http.js';
 import { isSupportedLiveRoomUrl } from '../lib/url.js';
 import { ACTIONS } from '../lib/constants.js';
+
+const PLATFORM_LABELS = {
+  kuaishou: '快手',
+  xiaohongshu: '小红书',
+  huya: '虎牙',
+  douyin: '抖音',
+  douyu: '斗鱼',
+  bilibili: 'B站',
+};
 
 function padTime(value) {
   return `${value}`.padStart(2, '0');
@@ -42,6 +52,184 @@ function normalizeStream(stream) {
     roomUrl: stream.roomUrl || '',
     capturedAt: stream.capturedAt || null,
   };
+}
+
+// ========== 平台监听摘要（快手轮询 / 小红书开播发现） ==========
+
+function buildPlatformRow(name, count, enabled, unit, title = '') {
+  const row = document.createElement('div');
+  row.className = 'platform-row';
+  if (title) row.title = title;
+
+  const label = document.createElement('div');
+  label.className = 'platform-name';
+
+  const dot = document.createElement('span');
+  dot.className = 'platform-dot' + (enabled ? '' : ' off');
+
+  const text = document.createElement('span');
+  text.textContent = name;
+
+  label.append(dot, text);
+
+  const countEl = document.createElement('span');
+  countEl.className = 'platform-count';
+  countEl.textContent = enabled ? `${count} ${unit}` : '已停用';
+
+  row.append(label, countEl);
+  return row;
+}
+
+async function renderPlatformSummary() {
+  const container = document.getElementById('platformSummary');
+  if (!container) return;
+
+  const config = await getConfig();
+  const enabledEnvs = config.environments.filter((env) => env.enabled);
+  const kuaishouAuthors = new Set();
+  const xhsAuthors = new Set();
+  for (const env of enabledEnvs) {
+    for (const author of env.followedAuthors || []) kuaishouAuthors.add(author);
+    for (const author of env.xiaohongshuAuthors || []) xhsAuthors.add(author);
+  }
+
+  const { monitorEnabled } = await chrome.storage.sync.get('monitorEnabled');
+  const enabled = monitorEnabled !== false;
+
+  container.replaceChildren(
+    buildPlatformRow(
+      '快手关注轮询',
+      kuaishouAuthors.size,
+      enabled,
+      '位关注',
+      [...kuaishouAuthors].join('、')
+    ),
+    buildPlatformRow(
+      '小红书开播发现',
+      xhsAuthors.size,
+      enabled,
+      '位监控',
+      [...xhsAuthors].join('、')
+    )
+  );
+}
+
+// ========== 当前录制（跨平台，来自各启用环境后端） ==========
+
+function formatRecordingDuration(startedAt) {
+  if (!startedAt) return '';
+  const started = new Date(startedAt).getTime();
+  if (Number.isNaN(started)) return '';
+  return `已录 ${formatDuration(Date.now() - started)}`;
+}
+
+function renderRecordingItem(room) {
+  const item = document.createElement('div');
+  item.className = 'recording-item';
+  item.title = room.room_url || '';
+
+  const head = document.createElement('div');
+  head.className = 'recording-head';
+
+  const badge = document.createElement('span');
+  badge.className = `platform-badge ${room.platform || ''}`;
+  badge.textContent =
+    PLATFORM_LABELS[room.platform] || room.platform || '直播';
+
+  const name = document.createElement('div');
+  name.className = 'recording-name';
+  name.textContent =
+    room.room_name ||
+    room.live_room_id ||
+    (room.room_url || '').split('/').filter(Boolean).pop() ||
+    '未知房间';
+
+  head.append(badge, name);
+
+  const meta = document.createElement('div');
+  meta.className = 'recording-meta';
+  const statusText = room.status === 'paused' ? '已暂停' : '录制中';
+  const duration = formatRecordingDuration(room.started_at);
+  meta.textContent = [room.envLabel, statusText, duration]
+    .filter(Boolean)
+    .join(' · ');
+
+  item.append(head, meta);
+
+  if (room.room_url) {
+    item.addEventListener('click', () => {
+      chrome.tabs.create({ url: room.room_url, active: true });
+    });
+  }
+  return item;
+}
+
+let activeRecordingsLoading = false;
+
+async function renderActiveRecordings() {
+  const container = document.getElementById('recordingsStatus');
+  const countEl = document.getElementById('recordingCount');
+  if (!container || activeRecordingsLoading) return;
+  activeRecordingsLoading = true;
+  try {
+    await loadActiveRecordings(container, countEl);
+  } finally {
+    activeRecordingsLoading = false;
+  }
+}
+
+async function loadActiveRecordings(container, countEl) {
+
+  const config = await getConfig();
+  const enabledEnvs = config.environments.filter((env) => env.enabled);
+
+  const rooms = [];
+  let reachable = 0;
+  for (const env of enabledEnvs) {
+    try {
+      const result = await fetchJson(
+        `${env.statusApiUrl}?active=true&include_all=true`
+      );
+      reachable++;
+      const list = result.data?.data?.rooms || [];
+      for (const room of list) {
+        rooms.push({ ...room, envLabel: env.label || env.name });
+      }
+    } catch (err) {
+      console.warn(`[Popup][${env.name}] 获取录制状态失败:`, err.message);
+    }
+  }
+
+  const seen = new Set();
+  const unique = rooms.filter((room) => {
+    const key = `${room.platform}|${
+      room.live_room_id || room.live_url || room.room_url
+    }`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  if (countEl) countEl.textContent = String(unique.length);
+  container.innerHTML = '';
+
+  if (unique.length === 0) {
+    const empty = document.createElement('div');
+    empty.className = 'recordings-empty';
+    if (enabledEnvs.length === 0) {
+      empty.textContent = '未启用任何环境';
+    } else if (reachable === 0) {
+      empty.textContent = '无法获取录制状态';
+    } else {
+      empty.textContent = '暂无进行中的录制';
+    }
+    container.appendChild(empty);
+    return;
+  }
+
+  for (const room of unique) {
+    container.appendChild(renderRecordingItem(room));
+  }
 }
 
 function renderList() {
@@ -223,13 +411,13 @@ function updateToggleUI(enabled) {
     toggleIcon.textContent = '📹';
     statusText.className = 'status-text on';
     statusText.textContent = '监听中';
-    statusDetail.textContent = '正在监控直播流';
+    statusDetail.textContent = '快手轮询 + 小红书发现';
   } else {
     toggleBtn.className = 'toggle-button off';
     toggleIcon.textContent = '📹';
     statusText.className = 'status-text off';
     statusText.textContent = '已停用';
-    statusDetail.textContent = '点击按钮启用后台关注';
+    statusDetail.textContent = '点击按钮启用开播发现';
   }
 }
 
@@ -364,7 +552,10 @@ function renderDanmakuStatus() {
 renderList();
 updateRequestDataUI();
 renderDanmakuStatus();
+renderPlatformSummary();
+renderActiveRecordings();
 setInterval(renderDanmakuStatus, 3000);
+setInterval(renderActiveRecordings, 5000);
 
 chrome.storage.sync.get('monitorEnabled', (result) => {
   const enabled = result.monitorEnabled !== false;
@@ -400,6 +591,13 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== 'sync') return;
   if (changes.danmakuEnabled !== undefined) {
     renderDanmakuStatus();
+  }
+  if (
+    changes.environments !== undefined ||
+    changes.monitorEnabled !== undefined
+  ) {
+    renderPlatformSummary();
+    renderActiveRecordings();
   }
 });
 

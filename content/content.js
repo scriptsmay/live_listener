@@ -1,8 +1,9 @@
 // content/content.js
-// 三重职责：
+// 四重职责：
 // 1. 检测 <video> 标签的 currentSrc，捕获 webRequest 可能遗漏的流地址
 // 2. 受控注入 inject.js 到页面 MAIN world，拦截快手弹幕 WebSocket
 // 3. 将 inject.js 拦截的弹幕事件转发给 background.js
+// 4. 将 inject.js 解析的小红书页面直播信息转发给 background.js
 //
 // 注意：content_scripts 不支持 ESM，不能使用 import，必要函数直接内联
 
@@ -354,6 +355,15 @@ window.addEventListener('message', (event) => {
     safeSendMessage({
       action: 'add_media',
       url: data.url,
+    });
+    return;
+  }
+
+  // inject.js 从小红书页面响应 / 直播间状态中解析出的直播信息
+  if (data.type === 'xhs_live_info' && Array.isArray(data.items)) {
+    safeSendMessage({
+      action: 'xhs_live_info',
+      items: data.items,
     });
     return;
   }

@@ -399,6 +399,147 @@ body {
   text-align: left;
 }
 
+/* ========== 平台监听摘要 ========== */
+
+.platform-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--gray-100);
+}
+
+.platform-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  color: var(--gray-600);
+}
+
+.platform-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+
+.platform-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--success);
+}
+
+.platform-dot.off {
+  background: var(--gray-400);
+}
+
+.platform-count {
+  color: var(--gray-400);
+  font-weight: 600;
+}
+
+/* ========== 录制中卡片 ========== */
+
+.recordings-card {
+  background: white;
+  border: 2px solid var(--gray-100);
+  border-radius: 16px;
+  padding: 16px;
+  box-shadow: var(--shadow-md);
+  margin-top: 12px;
+}
+
+.recordings-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.recordings-card-title {
+  font-size: 13px;
+  color: var(--gray-600);
+  font-weight: 700;
+  letter-spacing: 0.5px;
+}
+
+.recordings-count {
+  background: var(--primary);
+  color: white;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.recordings-empty {
+  font-size: 11px;
+  color: var(--gray-400);
+  text-align: center;
+  padding: 8px 0;
+}
+
+.recording-item {
+  padding: 8px 6px;
+  margin: 0 -6px;
+  border-top: 1px solid var(--gray-100);
+  cursor: pointer;
+  border-radius: 8px;
+  transition: background 0.2s;
+}
+
+.recording-item:hover {
+  background: var(--gray-50);
+}
+
+.recording-item:first-child {
+  border-top: none;
+  padding-top: 4px;
+}
+
+.recording-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.platform-badge {
+  flex-shrink: 0;
+  font-size: 9px;
+  font-weight: 700;
+  color: white;
+  background: var(--gray-400);
+  padding: 2px 6px;
+  border-radius: 8px;
+}
+
+.platform-badge.kuaishou {
+  background: #ff6600;
+}
+
+.platform-badge.xiaohongshu {
+  background: #ff2442;
+}
+
+.recording-name {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--gray-800);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.recording-meta {
+  margin-top: 3px;
+  font-size: 9px;
+  color: var(--gray-400);
+}
+
 /* ========== 弹幕采集状态卡片 ========== */
 
 .danmaku-card {

@@ -1,6 +1,9 @@
-// inject.js — 注入到快手直播间 MAIN world
-// 作用：通过原型级 hook 拦截 WebSocket 消息，捕获弹幕（protobuf 二进制 + JSON 双模式）
-// 通过 window.postMessage 将解析后的弹幕事件传递给 content.js (ISOLATED world)
+// inject.js — 注入到快手直播间 / 小红书页面 MAIN world
+// 作用：
+// 1. 通过原型级 hook 拦截 WebSocket 消息，捕获弹幕（protobuf 二进制 + JSON 双模式）
+// 2. 被动解析小红书页面自身响应（squarefeed / onebox / homefeed）与直播间状态，
+//    提取可录制直播信息（主播 userId、roomId、flv 地址）
+// 通过 window.postMessage 将解析结果传递给 content.js (ISOLATED world)
 
 (function () {
   'use strict';
@@ -259,6 +262,349 @@
       },
       '*'
     );
+  }
+
+  // ========== 小红书页面直播信息解析（被动嗅探）==========
+  //
+  // 只解析页面自身已经发出的响应，不额外发起请求、不构造签名。
+  // 覆盖来源：
+  //   - 直播广场 squarefeed：tRoomInfo + tLiveHostInfo + link(flvUrl)
+  //   - 搜索 onebox：user_one_box.live_info
+  //   - homefeed / feed：note.liveCard.live
+  //   - 直播间页面 __INITIAL_STATE__.liveStream（room → 主页 userId）
+  const XHS_LIVE_ENDPOINTS = [
+    { kind: 'squarefeed', re: /\/api\/sns\/red\/live\/web\/feed\/v1\/squarefeed/ },
+    { kind: 'onebox', re: /\/api\/sns\/web\/v1\/search\/onebox/ },
+    { kind: 'homefeed', re: /\/api\/sns\/web\/v1\/homefeed/ },
+    { kind: 'feed', re: /\/api\/sns\/web\/v1\/feed\// },
+  ];
+  const xhsEmittedKeys = new Set();
+  const XHS_EMITTED_KEYS_LIMIT = 500;
+
+  function matchXhsLiveEndpoint(url) {
+    if (!isXiaohongshuHost || typeof url !== 'string' || !url) return null;
+    const matched = XHS_LIVE_ENDPOINTS.find((endpoint) => endpoint.re.test(url));
+    return matched ? matched.kind : null;
+  }
+
+  function unwrapRef(value) {
+    if (
+      value &&
+      typeof value === 'object' &&
+      Object.prototype.hasOwnProperty.call(value, '_value')
+    ) {
+      return value._value;
+    }
+    return value;
+  }
+
+  function safeParseJson(value) {
+    if (typeof value !== 'string') return null;
+    try {
+      return JSON.parse(value);
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function parseQueryParam(url, name) {
+    if (typeof url !== 'string' || !url) return '';
+    const match = url.match(new RegExp(`[?&]${name}=([^&#]*)`, 'i'));
+    if (!match) return '';
+    try {
+      return decodeURIComponent(match[1]);
+    } catch (_) {
+      return match[1];
+    }
+  }
+
+  /**
+   * 深度查找 FLV 地址；会解析嵌套 JSON 字符串（如 roomExtraInfo.live_stream_info）。
+   * 优先 master_url（原画源地址）。
+   */
+  function findFlvUrl(node, depth = 0, seen = new WeakSet()) {
+    if (typeof node === 'string') {
+      if (/^https?:\/\/[^\s"']+\.flv/i.test(node)) return node;
+      const trimmed = node.trim();
+      if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+        const parsed = safeParseJson(trimmed);
+        if (parsed) return findFlvUrl(parsed, depth + 1, seen);
+      }
+      return '';
+    }
+    if (!node || typeof node !== 'object' || depth > 10 || seen.has(node)) return '';
+    seen.add(node);
+
+    for (const key of ['master_url', 'masterUrl', 'flvUrl', 'flv_url', 'playUrl']) {
+      const value = node[key];
+      if (typeof value === 'string' && /^https?:\/\/[^\s"']+\.flv/i.test(value)) {
+        return value;
+      }
+    }
+    const values = Array.isArray(node) ? node : Object.values(node);
+    for (const value of values) {
+      const found = findFlvUrl(value, depth + 1, seen);
+      if (found) return found;
+    }
+    return '';
+  }
+
+  function cleanString(value) {
+    return typeof value === 'string' ? value.trim() : '';
+  }
+
+  function buildXhsLiveItem(raw) {
+    if (!raw || typeof raw !== 'object') return null;
+    const roomId = cleanString(raw.roomId);
+    if (!roomId) return null;
+    const live =
+      raw.live === undefined
+        ? true
+        : raw.live === true || Number(raw.live) === 2 || raw.live === 'LIVING';
+    return {
+      platform: 'xiaohongshu',
+      live,
+      roomId,
+      userId: cleanString(raw.userId),
+      redId: cleanString(raw.redId),
+      nickname: cleanString(raw.nickname),
+      title: cleanString(raw.title),
+      streamUrl: cleanString(raw.streamUrl),
+      coverUrl: cleanString(raw.coverUrl),
+      roomUrl: `https://www.xiaohongshu.com/livestream/${roomId}`,
+      source: cleanString(raw.source),
+    };
+  }
+
+  /** 直播广场：{ live: { tRoomInfo, tLiveHostInfo, roomExtraInfo } } */
+  function collectSquareFeedItems(root) {
+    const items = [];
+    const seenRooms = new Set();
+    const visited = new WeakSet();
+    const walk = (node, depth) => {
+      if (!node || typeof node !== 'object' || depth > 10 || visited.has(node)) return;
+      visited.add(node);
+      if (Array.isArray(node)) {
+        node.forEach((child) => walk(child, depth + 1));
+        return;
+      }
+
+      const live = node.live && typeof node.live === 'object' ? node.live : null;
+      const roomInfo =
+        (live && (live.tRoomInfo || live.roomInfo)) || node.tRoomInfo || null;
+      const hostInfo =
+        (live && (live.tLiveHostInfo || live.liveHostInfo)) || node.tLiveHostInfo || null;
+
+      if (roomInfo && hostInfo) {
+        const roomId = cleanString(roomInfo.roomIdStr || roomInfo.roomId);
+        const link = cleanString(roomInfo.link);
+        const streamUrl =
+          findFlvUrl(live && live.roomExtraInfo) ||
+          parseQueryParam(link, 'flvUrl') ||
+          findFlvUrl(roomInfo);
+        const item = buildXhsLiveItem({
+          roomId,
+          userId: hostInfo.userId || hostInfo.user_id,
+          nickname: hostInfo.nickname || hostInfo.nickName,
+          title: roomInfo.name || roomInfo.roomTitle,
+          streamUrl,
+          coverUrl:
+            (roomInfo.coverInfo && roomInfo.coverInfo.coverImage) || roomInfo.cover,
+          source: 'squarefeed',
+        });
+        if (item && !seenRooms.has(item.roomId)) {
+          seenRooms.add(item.roomId);
+          items.push(item);
+        }
+      }
+
+      Object.values(node).forEach((child) => walk(child, depth + 1));
+    };
+    walk(root, 0);
+    return items;
+  }
+
+  /** 搜索 onebox：user_one_box.live_info */
+  function collectOneboxItems(root) {
+    const items = [];
+    const seenRooms = new Set();
+    const visited = new WeakSet();
+    const walk = (node, depth) => {
+      if (!node || typeof node !== 'object' || depth > 10 || visited.has(node)) return;
+      visited.add(node);
+      if (Array.isArray(node)) {
+        node.forEach((child) => walk(child, depth + 1));
+        return;
+      }
+
+      const box = node.user_one_box || node.userOneBox;
+      const liveInfo = box && (box.live_info || box.liveInfo);
+      if (box && liveInfo && typeof liveInfo === 'object') {
+        const link = cleanString(liveInfo.link);
+        const item = buildXhsLiveItem({
+          roomId: liveInfo.room_id || liveInfo.roomId,
+          userId: box.id || liveInfo.user_id,
+          redId: box.red_id || box.redId,
+          nickname: box.title || box.nickname,
+          title: liveInfo.title || box.title,
+          streamUrl: parseQueryParam(link, 'flvUrl') || findFlvUrl(liveInfo),
+          coverUrl: box.image,
+          live: liveInfo.status,
+          source: 'onebox',
+        });
+        if (item && !seenRooms.has(item.roomId)) {
+          seenRooms.add(item.roomId);
+          items.push(item);
+        }
+      }
+
+      Object.values(node).forEach((child) => walk(child, depth + 1));
+    };
+    walk(root, 0);
+    return items;
+  }
+
+  /** homefeed / feed：note.liveCard.live 或 note.live */
+  function collectGenericFeedItems(root) {
+    const items = [];
+    const seenRooms = new Set();
+    const visited = new WeakSet();
+    const walk = (node, depth) => {
+      if (!node || typeof node !== 'object' || depth > 10 || visited.has(node)) return;
+      visited.add(node);
+      if (Array.isArray(node)) {
+        node.forEach((child) => walk(child, depth + 1));
+        return;
+      }
+
+      const live =
+        (node.liveCard && node.liveCard.live) || (node.live && typeof node.live === 'object' ? node.live : null);
+      const roomId = live && (live.roomId || live.room_id || live.roomIdStr);
+      if (roomId) {
+        const host =
+          live.hostInfo ||
+          live.tLiveHostInfo ||
+          node.user ||
+          node.host ||
+          node.author ||
+          {};
+        const hostName = host.nickname || host.nickName || host.name;
+        const item = buildXhsLiveItem({
+          roomId,
+          userId: host.userId || host.user_id || host.id,
+          nickname: hostName,
+          title: node.title || node.displayTitle || live.title,
+          streamUrl:
+            findFlvUrl(live) ||
+            parseQueryParam(cleanString(live.link || node.link), 'flvUrl'),
+          coverUrl:
+            (node.cover && (node.cover.url || node.cover.coverImage)) ||
+            (typeof node.cover === 'string' ? node.cover : '') ||
+            live.cover,
+          live: live.status,
+          source: 'feed',
+        });
+        if (item && !seenRooms.has(item.roomId)) {
+          seenRooms.add(item.roomId);
+          items.push(item);
+        }
+        // note.liveCard 已整体解析，继续下钻只会得到缺少主播信息的重复条目
+        if (node.liveCard) return;
+      }
+
+      Object.values(node).forEach((child) => walk(child, depth + 1));
+    };
+    walk(root, 0);
+    return items;
+  }
+
+  function emitXhsLiveItems(items) {
+    const fresh = [];
+    for (const item of items || []) {
+      if (!item || !item.roomId) continue;
+      const key = `${item.roomId}|${item.userId}|${item.streamUrl ? '1' : '0'}`;
+      if (xhsEmittedKeys.has(key)) continue;
+      xhsEmittedKeys.add(key);
+      fresh.push(item);
+    }
+    if (!fresh.length) return;
+    if (xhsEmittedKeys.size > XHS_EMITTED_KEYS_LIMIT) xhsEmittedKeys.clear();
+
+    window.postMessage(
+      {
+        source: 'ks-danmaku-inject',
+        type: 'xhs_live_info',
+        items: fresh,
+        timestamp: Date.now(),
+      },
+      '*'
+    );
+  }
+
+  function handleXhsLiveResponse(kind, text) {
+    const json = safeParseJson(text);
+    if (!json) return;
+
+    let items = [];
+    if (kind === 'squarefeed') {
+      items = collectSquareFeedItems(json);
+    } else if (kind === 'onebox') {
+      items = collectOneboxItems(json);
+    } else {
+      items = collectGenericFeedItems(json);
+    }
+    if (items.length > 0) {
+      console.log(TAG, `[XHS] 命中页面直播信息 ${items.length} 条 (${kind})`);
+      emitXhsLiveItems(items);
+    }
+  }
+
+  /**
+   * 直播间页面：从 __INITIAL_STATE__.liveStream 反推主播主页 userId。
+   * 这是「直播间 → 主页 uid」的直接来源（hostInfo.userId），
+   * 服务端 XiaohongshuChecker 依赖的 host_id 也在 roomInfo.deeplink 里。
+   */
+  let lastXhsRoomStateKey = '';
+  function readXhsLiveRoomState() {
+    if (!isXiaohongshuHost || !isXiaohongshuLivePage()) {
+      lastXhsRoomStateKey = '';
+      return;
+    }
+    const state = window.__INITIAL_STATE__;
+    if (!state) return;
+
+    const liveStream = unwrapRef(state.liveStream);
+    if (!liveStream) return;
+    const roomData = unwrapRef(liveStream.roomData) || {};
+    const hostInfo = unwrapRef(roomData.hostInfo) || {};
+    const roomInfo = unwrapRef(roomData.roomInfo) || {};
+
+    const roomId = cleanString(roomInfo.roomId || roomInfo.roomIdStr);
+    if (!roomId) return;
+
+    const userId = cleanString(
+      hostInfo.userId || hostInfo.user_id || parseQueryParam(roomInfo.deeplink, 'host_id')
+    );
+    const streamUrl =
+      parseQueryParam(roomInfo.deeplink, 'flvUrl') ||
+      findFlvUrl(roomInfo.pullConfig) ||
+      findFlvUrl(roomInfo);
+
+    const stateKey = `${roomId}|${userId}|${streamUrl}`;
+    if (stateKey === lastXhsRoomStateKey) return;
+    lastXhsRoomStateKey = stateKey;
+
+    const item = buildXhsLiveItem({
+      roomId,
+      userId,
+      nickname: hostInfo.nickName || hostInfo.nickname,
+      title: roomInfo.roomTitle || roomInfo.name,
+      streamUrl,
+      coverUrl: roomInfo.roomCover,
+      live: roomInfo.status,
+      source: 'live_room',
+    });
+    if (item) emitXhsLiveItems([item]);
   }
 
   // 保存原始引用
@@ -1285,13 +1631,31 @@
     if (url) {
       maybeReportXhsFlvUrl(url);
     }
+    const xhsLiveKind = matchXhsLiveEndpoint(url);
     // 只打印疑似弹幕相关的请求
     if (url && (url.includes('danmu') || url.includes('danmaku') || url.includes('feed') ||
                 url.includes('comment') || url.includes('live') || url.includes('gift') ||
                 url.includes('kuaishou') || url.includes('kwai') || url.includes('xiaohongshu'))) {
       console.log(TAG, `[Fetch] #${stats.fetchCalls}: ${url.slice(0, 120)}`, init ? init.method || 'GET' : 'GET');
     }
-    return originalFetch.apply(this, arguments);
+
+    const promise = originalFetch.apply(this, arguments);
+    if (!xhsLiveKind) return promise;
+
+    return promise.then((response) => {
+      try {
+        if (response && response.ok) {
+          response
+            .clone()
+            .text()
+            .then((text) => handleXhsLiveResponse(xhsLiveKind, text))
+            .catch(() => {});
+        }
+      } catch (_) {
+        // 克隆失败不影响页面原始请求
+      }
+      return response;
+    });
   };
 
   const originalXHROpen = XMLHttpRequest.prototype.open;
@@ -1300,12 +1664,32 @@
     if (url) {
       maybeReportXhsFlvUrl(String(url));
     }
+    this.__xhsLiveKind = matchXhsLiveEndpoint(String(url));
     if (url && (url.includes('danmu') || url.includes('danmaku') || url.includes('feed') ||
                 url.includes('comment') || url.includes('live') || url.includes('gift') ||
                 url.includes('kuaishou') || url.includes('kwai') || url.includes('xiaohongshu'))) {
       console.log(TAG, `[XHR] #${stats.xhrCalls}: ${method} ${String(url).slice(0, 120)}`);
     }
     return originalXHROpen.apply(this, arguments);
+  };
+
+  const originalXHRSend = XMLHttpRequest.prototype.send;
+  XMLHttpRequest.prototype.send = function () {
+    const xhsLiveKind = this.__xhsLiveKind;
+    if (xhsLiveKind) {
+      this.addEventListener('load', function () {
+        try {
+          if (this.status < 200 || this.status >= 300) return;
+          const responseType = this.responseType || '';
+          const text =
+            responseType === '' || responseType === 'text' ? this.responseText : '';
+          if (text) handleXhsLiveResponse(xhsLiveKind, text);
+        } catch (_) {
+          // 读取响应失败不影响页面原始请求
+        }
+      });
+    }
+    return originalXHRSend.apply(this, arguments);
   };
 
   // ========== SSE (EventSource) 拦截 ==========
@@ -1860,6 +2244,11 @@
 
   if (isXiaohongshuHost) {
     setupXiaohongshuDomObserver();
+
+    // 直播间页面状态轮询：SPA 路由切换后 __INITIAL_STATE__.liveStream 才可用。
+    // 仅读取页面内存，不发起网络请求。
+    setInterval(readXhsLiveRoomState, 3000);
+    readXhsLiveRoomState();
   }
 
   // 通知 content.js 注入成功

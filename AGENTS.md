@@ -26,6 +26,8 @@ core/                          # 核心业务逻辑
   danmaku-switch.js            # 弹幕采集开关
   following-poll.js            # 关注列表轮询、开播检测、手动立即检测
   poll-schedule.js             # 轮询 alarm 的创建/查询/清除（可被 options 页依赖）
+  xhs-live-discovery.js        # 小红书页面直播信息发现 → 匹配监控主播 → 录制上报
+  xhs-authors.js               # 小红书监控条目解析（小红书号 / 用户ID / 主页链接 / 昵称）与匹配
 lib/                           # 公共工具层（纯工具，无业务逻辑）
   http.js                      # fetchJson 统一封装
   url.js                       # isKuaishouLiveRoomUrl、isXiaohongshuLiveRoomUrl、isSupportedLiveRoomUrl、normalizeRoomUrl、getLiveRoomUrlFromRequest
@@ -80,6 +82,7 @@ ui/                            # 用户界面
   - `POST {notifyApiUrl}` with JSON body `{ url, title, room_url, caption, cover_url? }` — start recording. `cover_url` 仅在关注列表轮询链路可用：取快手 `follow/living` 返回的 `poster` 字段；其他链路（webRequest / 手动录制）不带该字段，由后端自行兜底。
   - `GET {statusApiUrl}?url={roomUrl}` — check if already recording (and whether `extension_danmaku_enabled` is enabled).
   - `GET {statusApiUrl}?active=true` — fetch active recording rooms (`kuaishou` / `xiaohongshu`) with `extension_danmaku_enabled = true` so `syncBackendActiveRecordings()` can automatically open/close background danmaku tabs.
+  - `GET {statusApiUrl}?active=true&include_all=true` — Popup「录制中」卡片使用，返回全部平台的活跃录制（不要求 `extension_danmaku_enabled`）。只读展示，不要把它用于弹幕同步决策。
   - `POST {danmakuBatchApiUrl}` with JSON body `{ room_url, events, session_start_ms, title }` — push danmaku batch.
 - `core/config.js` defines multiple environments (`production` → `:11123`, `development` → `:3001`).
   - Each environment has its own toggle, notify API URL, and status API URL.
@@ -125,6 +128,24 @@ ui/                            # 用户界面
 > ⚠️ **禁止在 Service Worker 模块图中使用动态 `import()`**：MV3 明确禁止（`import() is disallowed on ServiceWorkerGlobalScope by the HTML specification`），调用时会抛错。如果该 `import()` 位于 `try/catch` 内且 catch 为空，故障会被完全静默——曾导致 `checkRecordingAndUpdateSession()` 里 `isEnvironmentRecording` 永远加载失败，`isSending` 永远为 false，弹幕只缓冲不发送。
 >
 > ESM 静态循环导入在此处是安全的：互相引用的函数只在运行时事件回调里调用，模块求值阶段不触发。
+
+## 小红书开播发现（被动嗅探，v1.2.0）
+
+`content/inject.js` 在 MAIN world 劫持 `fetch` / `XMLHttpRequest` 的**响应**，解析页面自身已经发出的请求，不构造签名、不额外发请求：
+
+| 来源 | 接口 / 位置 | 关键字段 |
+| --- | --- | --- |
+| 直播广场 | `live-room.xiaohongshu.com/api/sns/red/live/web/feed/v1/squarefeed` | `live.tRoomInfo`（roomId/link/cover）、`live.tLiveHostInfo`（userId/nickname）、`roomExtraInfo.live_stream_info`（`master_url` 原画流） |
+| 搜索用户卡 | `edith.xiaohongshu.com/api/sns/web/v1/search/onebox` | `user_one_box`：`id`、`red_id`、`live_info.room_id/status/link`（`flvUrl`） |
+| 关注/推荐流 | `edith.xiaohongshu.com/api/sns/web/v1/homefeed`、`/feed/*` | `note.liveCard.live` + `note.user` |
+| 直播间页面 | `window.__INITIAL_STATE__.liveStream`（Vue ref，需取 `_value`） | `roomData.hostInfo.userId`（**直播间 → 主页 uid**）、`roomInfo.roomId/deeplink/pullConfig` |
+
+- 解析结果经 `window.postMessage({type:'xhs_live_info', items})` → `content.js` → `ACTIONS.XHS_LIVE_INFO` → `core/xhs-live-discovery.js`。
+- `items` 统一为 `{platform:'xiaohongshu', live, roomId, userId, redId, nickname, title, streamUrl, coverUrl, roomUrl, source}`。
+- 直播间页面的 `liveStream` 是 Vue ref，`roomData` / `hostInfo` / `roomInfo` 也需要 `_value` 解包；`readXhsLiveRoomState()` 每 3 秒轮询页面内存（SPA 路由切换后状态才就绪）。
+- 匹配配置：每个环境新增 `xiaohongshuAuthors`，每行支持 `531916795`（小红书号）、24 位用户 ID、主页/直播间链接、`昵称|ID` 或纯昵称。匹配优先级：用户 ID > 小红书号 > 昵称。
+- 命中后调用 `sendToEnvironments()`，请求体额外携带 `host_user_id`、`live_room_id`，与后端 ADR-021 的稳定目标归并配合。
+- 去重：`notifiedRooms` 中使用 `xhs:{roomId}` key，仅在后端确认接受（`activeCount > 0`）后持久化；失败会在下一批页面响应时重试。
 
 ## Testing
 

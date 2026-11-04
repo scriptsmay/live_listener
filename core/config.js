@@ -29,12 +29,14 @@ export const DEFAULT_ENVIRONMENTS = [
     label: '生产环境',
     enabled: true,
     followedAuthors: FOLLOWED_AUTHORS,
+    xiaohongshuAuthors: [],
   }),
   buildEnvironment('http://localhost:3001', {
     name: 'development',
     label: '开发环境',
     enabled: false,
     followedAuthors: [],
+    xiaohongshuAuthors: [],
   }),
 ];
 
@@ -80,6 +82,8 @@ export async function getConfig() {
       statusApiUrl: `${baseUrl}${STATUS_API_PATH}`,
       danmakuBatchApiUrl: `${baseUrl}${DANMAKU_BATCH_API_PATH}`,
       followedAuthors: storedAuthors ?? legacyAuthors ?? defaultAuthors,
+      xiaohongshuAuthors:
+        normalizeAuthors(stored?.xiaohongshuAuthors) ?? normalizeAuthors(def.xiaohongshuAuthors) ?? [],
     };
   });
   return {
