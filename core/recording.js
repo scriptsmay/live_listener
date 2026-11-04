@@ -6,6 +6,7 @@ import { getState, persistActiveRecording, clearActiveRecording } from './state.
 import { on, EVENTS } from './event-bus.js';
 import { getConfig } from './config.js';
 import { fetchJson } from '../lib/http.js';
+import { getXiaohongshuLiveRoomId } from '../lib/url.js';
 import {
   activateDanmakuForRoom,
   deactivateDanmakuForRoom,
@@ -28,6 +29,37 @@ function findEnvironmentsByTitle(config, title) {
   return getEnabledEnvironments(config).filter((env) =>
     getEnvAuthors(env).some((author) => title.includes(author))
   );
+}
+
+// 本场 live_room_id → host_user_id 的本地缓存（被动嗅探写入，手动录制读取）。
+// 小红书直播间 URL 本身在多数情况下不含 host_id，手动发送时靠它补上稳定目标身份。
+const XHS_HOST_CACHE_KEY = 'xhsLiveRoomHosts';
+const XHS_HOST_CACHE_LIMIT = 100;
+
+export async function cacheXhsLiveRoomHost(liveRoomId, hostUserId) {
+  if (!liveRoomId || !hostUserId) return;
+  try {
+    const data = await chrome.storage.local.get(XHS_HOST_CACHE_KEY);
+    const map = { ...(data?.[XHS_HOST_CACHE_KEY] || {}) };
+    map[liveRoomId] = hostUserId;
+    const keys = Object.keys(map);
+    if (keys.length > XHS_HOST_CACHE_LIMIT) {
+      for (const key of keys.slice(0, keys.length - XHS_HOST_CACHE_LIMIT)) {
+        delete map[key];
+      }
+    }
+    await chrome.storage.local.set({ [XHS_HOST_CACHE_KEY]: map });
+  } catch (_) {}
+}
+
+async function getCachedXhsHost(liveRoomId) {
+  if (!liveRoomId) return '';
+  try {
+    const data = await chrome.storage.local.get(XHS_HOST_CACHE_KEY);
+    return (data?.[XHS_HOST_CACHE_KEY] || {})[liveRoomId] || '';
+  } catch (_) {
+    return '';
+  }
 }
 
 // ===== 对外暴露 =====
@@ -68,14 +100,21 @@ export async function isEnvironmentRecording(env, roomUrl) {
  * 发送录制请求到指定环境（供 popup.js 手动录制使用）
  */
 export async function sendRecordingRequest(env, streamUrl, title, roomUrl) {
+  const liveRoomId = getXiaohongshuLiveRoomId(roomUrl);
+  const hostUserId = await getCachedXhsHost(liveRoomId);
+  const body = {
+    url: streamUrl,
+    title,
+    room_url: roomUrl,
+  };
+  // 小红书：带上本场场次与（缓存到的）主播身份，让后端归并到稳定目标，
+  // 而不是按直播间 URL 新建一条房间记录。
+  if (liveRoomId) body.live_room_id = liveRoomId;
+  if (hostUserId) body.host_user_id = hostUserId;
   return fetchJson(env.notifyApiUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      url: streamUrl,
-      title,
-      room_url: roomUrl,
-    }),
+    body: JSON.stringify(body),
   });
 }
 
@@ -94,6 +133,8 @@ export async function sendToEnvironments(
   extra = {}
 ) {
   let activeCount = 0;
+  const liveRoomId = extra.liveRoomId || getXiaohongshuLiveRoomId(roomUrl);
+  const hostUserId = extra.hostUserId || (await getCachedXhsHost(liveRoomId));
 
   for (const env of environments) {
     if (!env.enabled) continue;
@@ -129,8 +170,8 @@ export async function sendToEnvironments(
       };
       if (coverUrl) body.cover_url = coverUrl;
       // 小红书目标身份与本场场次标识（后端 RoomTargetService 用于归并稳定目标）
-      if (extra.hostUserId) body.host_user_id = extra.hostUserId;
-      if (extra.liveRoomId) body.live_room_id = extra.liveRoomId;
+      if (hostUserId) body.host_user_id = hostUserId;
+      if (liveRoomId) body.live_room_id = liveRoomId;
       const result = await fetchJson(env.notifyApiUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },

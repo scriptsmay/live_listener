@@ -13,7 +13,7 @@ import { getState, persistNotifiedRooms } from './state.js';
 import { getConfig } from './config.js';
 import { normalizeRoomUrl } from '../lib/url.js';
 import { buildXhsAuthorIndex, findTargetEnvironments } from './xhs-authors.js';
-import { sendToEnvironments } from './recording.js';
+import { sendToEnvironments, cacheXhsLiveRoomHost } from './recording.js';
 
 // 后端拒绝/网络失败后的重试间隔，避免页面每次 feed 响应都打一次后端
 const FAILURE_COOLDOWN_MS = 5 * 60 * 1000;
@@ -70,6 +70,9 @@ export async function handleXhsLiveInfo(items) {
     }
     const failedAt = state.xhsDiscoveryCooldown.get(item.roomId);
     if (failedAt && Date.now() - failedAt < FAILURE_COOLDOWN_MS) continue;
+
+    // 记录本场 live_room_id → host_user_id，供 Popup 手动录制等无 host_id 的链路复用。
+    await cacheXhsLiveRoomHost(item.roomId, item.userId || '');
 
     state.xhsDiscoveryInFlight.add(notifyKey);
     try {
