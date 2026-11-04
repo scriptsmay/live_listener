@@ -80,6 +80,8 @@ ui/                            # 用户界面
 - Recording-aware polling: when recording is confirmed, sets `activeRecordingRoomUrl` via `core/state.js`; subsequent `checkFollowingLivings` ticks query backend `/status` first and skip Kuaishou API if still recording (`core/following-poll.js`).
 - Backend endpoints (configurable in settings):
   - `POST {notifyApiUrl}` with JSON body `{ url, title, room_url, caption, cover_url?, host_user_id?, live_room_id? }` — start recording. `cover_url` 仅在关注列表轮询链路可用：取快手 `follow/living` 返回的 `poster` 字段；其他链路（webRequest / 手动录制）不带该字段，由后端自行兜底。小红书链路会自动附带 `live_room_id`（从直播间 URL 解析），并优先使用 `chrome.storage.local` 中 `xhsLiveRoomHosts` 缓存（被动嗅探写入的 `live_room_id → host_user_id`）补上 `host_user_id`，避免后端把同一主播的每场直播新建为独立房间。该缓存在 `handleXhsLiveInfo()` 入口处**无条件写入**（先于监听开关/监控名单判断），因此即使监听关闭或主播不在名单，只要打开过直播间页面，手动录制也能拿到主播身份。
+
+**配置生效时机**：`inject.js` 对同一页面状态有发射去重，配置保存后已打开的直播间不会自动重扫。因此 `Options` 保存（`RECHECK_FOLLOWING`）与 Popup「立即检测」（`CHECK_NOW`）都会调用 `rescanXhsTabs()`，通知所有小红书标签页清空去重并重读 `__INITIAL_STATE__`。若 content script 未注入（扩展刚重载、页面未刷新），消息会静默失败，需要手动刷新页面。`handleXhsLiveInfo()` 的跳过原因会打印 `[XhsDiscovery]` 日志，最近一次结果写入 `chrome.storage.local.xhsLastDiscovery` 并显示在 Popup 平台摘要下方（未命中 / 已上报 / 后端未接受等）。
   - `GET {statusApiUrl}?url={roomUrl}` — check if already recording (and whether `extension_danmaku_enabled` is enabled).
   - `GET {statusApiUrl}?active=true` — fetch active recording rooms (`kuaishou` / `xiaohongshu`) with `extension_danmaku_enabled = true` so `syncBackendActiveRecordings()` can automatically open/close background danmaku tabs.
   - `GET {statusApiUrl}?active=true&include_all=true` — Popup「录制中」卡片使用，返回全部平台的活跃录制（不要求 `extension_danmaku_enabled`）。只读展示，不要把它用于弹幕同步决策。

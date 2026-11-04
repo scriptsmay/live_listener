@@ -20,6 +20,29 @@ import { getPollSchedule } from './poll-schedule.js';
 import { handleXhsLiveInfo } from './xhs-live-discovery.js';
 import { isSupportedLiveRoomUrl, normalizeRoomUrl } from '../lib/url.js';
 
+/**
+ * 让所有已打开的小红书页面重新解析一次直播状态。
+ * 用于配置保存 / Popup「立即检测」：inject 有发射去重，不重扫的话
+ * 新增监控主播在已打开的直播间页面上不会立即生效。
+ * content script 未注入（如扩展刚重载、页面未刷新）时静默跳过。
+ */
+async function rescanXhsTabs() {
+  try {
+    const tabs = await chrome.tabs.query({ url: ['*://*.xiaohongshu.com/*'] });
+    let sent = 0;
+    for (const tab of tabs) {
+      if (!tab.id) continue;
+      try {
+        await chrome.tabs.sendMessage(tab.id, { action: 'xhs_rescan_room' });
+        sent++;
+      } catch (_) {}
+    }
+    return sent;
+  } catch (_) {
+    return 0;
+  }
+}
+
 export function handleMessage(request, sender, sendResponse) {
   // ===== 来自 popup.js 的消息 =====
 
@@ -73,6 +96,8 @@ export function handleMessage(request, sender, sendResponse) {
     getState().notifiedRooms.clear();
     chrome.storage.local.remove('notifiedRooms');
     checkFollowingLivings();
+    // Options 保存后，让已打开的小红书直播间按新监控名单立即重扫。
+    rescanXhsTabs();
     sendResponse({ status: 'recheck_started' });
     return;
   }
@@ -81,7 +106,10 @@ export function handleMessage(request, sender, sendResponse) {
   // 必须等查询有结果再回包，Popup 要据此展示本次结果。
   if (request.action === ACTIONS.CHECK_NOW) {
     checkFollowingNow()
-      .then((result) => sendResponse({ status: 'ok', ...result }))
+      .then(async (result) => {
+        const xhsTabs = await rescanXhsTabs();
+        sendResponse({ status: 'ok', ...result, xhsTabs });
+      })
       .catch((err) => {
         sendResponse({ status: 'error', message: err.message });
       });

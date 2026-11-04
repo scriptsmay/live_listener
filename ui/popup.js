@@ -112,6 +112,20 @@ async function renderPlatformSummary() {
       [...xhsAuthors].join('、')
     )
   );
+
+  // 最近一次小红书发现结果，便于判断"为什么没自动录"
+  const { xhsLastDiscovery } = await chrome.storage.local.get(
+    'xhsLastDiscovery'
+  );
+  if (xhsLastDiscovery?.at) {
+    const last = document.createElement('div');
+    last.className = 'platform-last';
+    last.title = xhsLastDiscovery.message || '';
+    last.textContent = `最近：${xhsLastDiscovery.nickname || xhsLastDiscovery.roomId} · ${
+      xhsLastDiscovery.ok ? '已上报' : '未录制'
+    } · ${formatStreamTime(xhsLastDiscovery.at)}`;
+    container.append(last);
+  }
 }
 
 // ========== 当前录制（跨平台，来自各启用环境后端） ==========
@@ -583,6 +597,10 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 
   if (changes.lastReqStatus && changes.lastReqStatus.newValue) {
     updateRequestDataUI();
+  }
+
+  if (changes.xhsLastDiscovery) {
+    renderPlatformSummary();
   }
 });
 

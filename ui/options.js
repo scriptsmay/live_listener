@@ -135,7 +135,7 @@ function renderEnvCard(env) {
   xhsAuthors.className = 'env-xhs-authors';
   xhsAuthors.rows = 5;
   xhsAuthors.placeholder =
-    '531916795（小红书号）\n5c2f2f8c000000000701d3dd（用户ID）\n昵称|531916795（昵称|ID，可选）';
+    '531916795（小红书号）\n5c2f2f8c000000000701d3dd（用户ID）\n王者荣耀女子公开赛（主播昵称）\n昵称|531916795（昵称|ID，可选）';
   xhsAuthors.value = (env.xiaohongshuAuthors || []).join('\n');
 
   card.append(
@@ -241,6 +241,19 @@ saveButton.addEventListener('click', () => {
     }
     if (!isAllowedBaseUrl(env.baseUrl)) {
       alert(`${env.label} 的服务地址未在 manifest 权限中声明`);
+      return;
+    }
+    // 直播间链接不含 host_id 时无法反推主播身份，保存后永远匹配不上，
+    // 直接拦下并提示改用手主页链接 / 用户ID / 小红书号 / 昵称。
+    const unusableXhsUrls = (env.xiaohongshuAuthors || []).filter(
+      (raw) => /^https?:\/\//i.test(raw) && /\/livestream\//i.test(raw) && !/[?&]host_id=/i.test(raw)
+    );
+    if (unusableXhsUrls.length > 0) {
+      alert(
+        `${env.label} 的小红书监控包含无法识别主播的直播间链接：\n${unusableXhsUrls.join(
+          '\n'
+        )}\n\n请改用主播主页链接、用户ID、小红书号或昵称。`
+      );
       return;
     }
     environments.push(env);

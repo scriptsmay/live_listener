@@ -401,6 +401,13 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
       .then(() => sendResponse(buildHealthReport(request.roomUrl)))
       .catch(() => {});
     return true;
+  } else if (request.action === 'xhs_rescan_room') {
+    // 配置变更 / 手动检测后，让已打开的直播间页面重新解析一次直播状态，
+    // 否则 inject 的去重逻辑会认为状态没变而不再上报。
+    window.postMessage(
+      { source: 'ks-danmaku-content', type: 'xhs_rescan_room' },
+      '*'
+    );
   }
 });
 

@@ -18,6 +18,14 @@ import { sendToEnvironments, cacheXhsLiveRoomHost } from './recording.js';
 // 后端拒绝/网络失败后的重试间隔，避免页面每次 feed 响应都打一次后端
 const FAILURE_COOLDOWN_MS = 5 * 60 * 1000;
 
+const LAST_DISCOVERY_KEY = 'xhsLastDiscovery';
+
+async function persistLastDiscovery(record) {
+  try {
+    await chrome.storage.local.set({ [LAST_DISCOVERY_KEY]: record });
+  } catch (_) {}
+}
+
 function buildRoomUrl(item) {
   return normalizeRoomUrl(
     item.roomUrl || `https://www.xiaohongshu.com/livestream/${item.roomId}`
@@ -47,15 +55,32 @@ export async function handleXhsLiveInfo(items) {
     }
   }
 
+  const state = getState();
+
+  // 下播/直播结束：解除本场去重，避免同一直播间重新开播时被永久跳过。
+  for (const item of items) {
+    if (item?.platform !== 'xiaohongshu' || item.live !== false || !item.roomId) continue;
+    const endedKey = `xhs:${item.roomId}`;
+    state.xhsDiscoveryCooldown.delete(item.roomId);
+    if (state.notifiedRooms.delete(endedKey)) {
+      await persistNotifiedRooms(state.notifiedRooms);
+      console.log(`[XhsDiscovery] 直播间 ${item.roomId} 已下播，解除本场去重`);
+    }
+  }
+
   const { monitorEnabled } = await chrome.storage.sync.get('monitorEnabled');
-  if (monitorEnabled === false) return;
+  if (monitorEnabled === false) {
+    console.log('[XhsDiscovery] 跳过：监听总开关已关闭');
+    return;
+  }
 
   const config = await getConfig();
   const enabledEnvs = config.environments.filter((env) => env.enabled);
   const index = buildXhsAuthorIndex(enabledEnvs);
-  if (!index.length) return;
-
-  const state = getState();
+  if (!index.length) {
+    console.log('[XhsDiscovery] 跳过：没有可用的监控条目（检查环境开关与「小红书开播发现」名单）');
+    return;
+  }
 
   if (state.xhsDiscoveryCooldown.size > 200) {
     const cutoff = Date.now() - FAILURE_COOLDOWN_MS;
@@ -66,18 +91,51 @@ export async function handleXhsLiveInfo(items) {
 
   for (const item of items) {
     if (!item || item.platform !== 'xiaohongshu' || item.live === false) continue;
-    if (!item.roomId || !item.streamUrl) continue;
+    if (!item.roomId) continue;
+    if (!item.streamUrl) {
+      console.log(`[XhsDiscovery] 跳过：直播间 ${item.roomId} 未解析到流地址`);
+      continue;
+    }
 
     const targetEnvs = findTargetEnvironments(item, index);
-    if (!targetEnvs.length) continue;
+    if (!targetEnvs.length) {
+      console.log(
+        `[XhsDiscovery] 未命中监控名单：nickname=${item.nickname || '-'} ` +
+          `userId=${item.userId || '-'} redId=${item.redId || '-'} room=${item.roomId}`
+      );
+      if (item.source === 'live_room') {
+        await persistLastDiscovery({
+          at: Date.now(),
+          roomId: item.roomId,
+          nickname: item.nickname || '',
+          ok: false,
+          message: '未命中监控名单',
+        });
+      }
+      continue;
+    }
 
     const roomUrl = buildRoomUrl(item);
     const notifyKey = `xhs:${item.roomId}`;
-    if (state.notifiedRooms.has(notifyKey) || state.xhsDiscoveryInFlight.has(notifyKey)) {
+    if (state.notifiedRooms.has(notifyKey)) {
+      console.log(`[XhsDiscovery] 跳过：本场已上报过 (${notifyKey})`);
+      if (item.source === 'live_room') {
+        await persistLastDiscovery({
+          at: Date.now(),
+          roomId: item.roomId,
+          nickname: item.nickname || '',
+          ok: false,
+          message: '本场已上报过，等待下次开播',
+        });
+      }
       continue;
     }
+    if (state.xhsDiscoveryInFlight.has(notifyKey)) continue;
     const failedAt = state.xhsDiscoveryCooldown.get(item.roomId);
-    if (failedAt && Date.now() - failedAt < FAILURE_COOLDOWN_MS) continue;
+    if (failedAt && Date.now() - failedAt < FAILURE_COOLDOWN_MS) {
+      console.log(`[XhsDiscovery] 跳过：失败冷却中 (room=${item.roomId})`);
+      continue;
+    }
 
     state.xhsDiscoveryInFlight.add(notifyKey);
     try {
@@ -107,6 +165,16 @@ export async function handleXhsLiveInfo(items) {
       } else {
         state.xhsDiscoveryCooldown.set(item.roomId, Date.now());
       }
+      await persistLastDiscovery({
+        at: Date.now(),
+        roomId: item.roomId,
+        nickname: item.nickname || '',
+        ok: activeCount > 0,
+        message:
+          activeCount > 0
+            ? `已上报到 ${targetEnvs.map((env) => env.label || env.name).join('、')}`
+            : '后端未接受（可能已暂停监听或线程池已满）',
+      });
     } catch (err) {
       state.xhsDiscoveryCooldown.set(item.roomId, Date.now());
       console.warn('[XhsDiscovery] 上报失败:', err.message);

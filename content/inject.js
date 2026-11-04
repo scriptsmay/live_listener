@@ -590,7 +590,7 @@
       findFlvUrl(roomInfo.pullConfig) ||
       findFlvUrl(roomInfo);
 
-    const stateKey = `${roomId}|${userId}|${streamUrl}`;
+    const stateKey = `${roomId}|${userId}|${streamUrl}|${roomInfo.status}`;
     if (stateKey === lastXhsRoomStateKey) return;
     lastXhsRoomStateKey = stateKey;
 
@@ -2249,6 +2249,18 @@
     // 仅读取页面内存，不发起网络请求。
     setInterval(readXhsLiveRoomState, 3000);
     readXhsLiveRoomState();
+
+    // 配置保存 / Popup「立即检测」后重新解析一次：清掉发射与状态去重，
+    // 让新增的监控主播在当前已打开的页面上也能立即生效。
+    window.addEventListener('message', (event) => {
+      const data = event.data;
+      if (!data || data.source !== 'ks-danmaku-content' || data.type !== 'xhs_rescan_room') {
+        return;
+      }
+      lastXhsRoomStateKey = '';
+      xhsEmittedKeys.clear();
+      readXhsLiveRoomState();
+    });
   }
 
   // 通知 content.js 注入成功
