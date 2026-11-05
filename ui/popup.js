@@ -40,6 +40,18 @@ function formatStreamTime(timestamp) {
 // 小红书直播 CDN 的清晰度无法从 URL 判断，Popup 打开时按需探测真实分辨率。
 const probeCache = new Map();
 const probeInFlight = new Map();
+// 须大于服务端 PROBE_TIMEOUT_MS(6s)，让服务端先返回明确的 timeout 而不是连接被断开。
+const PROBE_FETCH_TIMEOUT_MS = 12000;
+const PROBE_RETRY_DELAY_MS = 1500;
+const PROBE_REASON_LABELS = {
+  busy: '服务端忙',
+  timeout: '探测超时',
+  probe_failed: 'ffprobe 失败',
+  no_video_stream: '无视频轨',
+  unsupported_url: '地址不支持',
+  ffprobe_unavailable: 'ffprobe 不可用',
+  parse_failed: '解析失败',
+};
 
 function isXhsLiveCdnUrl(url) {
   if (typeof url !== 'string') return false;
@@ -63,9 +75,12 @@ function probeApiUrl(env) {
   return base.replace('/notify/live_download', '/notify/probe_stream');
 }
 
-async function probeStreamQuality(url) {
-  if (probeCache.has(url)) return probeCache.get(url);
-  if (probeInFlight.has(url)) return probeInFlight.get(url);
+/** 统一返回 { ok, info?, reason?, detail? }，失败原因不再被静默吞掉。 */
+async function probeStreamQuality(url, { ignoreCache = false } = {}) {
+  if (!ignoreCache) {
+    if (probeCache.has(url)) return probeCache.get(url);
+    if (probeInFlight.has(url)) return probeInFlight.get(url);
+  }
 
   const task = (async () => {
     try {
@@ -73,18 +88,36 @@ async function probeStreamQuality(url) {
       const env = config.environments.find(
         (item) => item.enabled && probeApiUrl(item)
       );
-      if (!env) return null;
-      const result = await fetchJson(probeApiUrl(env), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url }),
-      });
-      const data =
-        result.ok && result.data?.status === 'ok' ? result.data.data : null;
-      if (data?.ok) probeCache.set(url, data);
-      return data;
-    } catch (_) {
-      return null;
+      if (!env) return { ok: false, reason: 'no_environment' };
+      const result = await fetchJson(
+        probeApiUrl(env),
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ url }),
+        },
+        PROBE_FETCH_TIMEOUT_MS
+      );
+      const data = result.data;
+      if (!result.ok || data?.status !== 'ok') {
+        const reason =
+          typeof data?.message === 'string'
+            ? data.message
+            : `http_${result.status}`;
+        const detail = typeof data?.detail === 'string' ? data.detail : '';
+        console.warn('[Popup] 画质探测失败:', url, reason, detail);
+        return { ok: false, reason, detail };
+      }
+      const info = data.data;
+      probeCache.set(url, { ok: true, info });
+      return { ok: true, info };
+    } catch (err) {
+      console.warn('[Popup] 画质探测异常:', url, err);
+      return {
+        ok: false,
+        reason: 'network_error',
+        detail: String(err?.message || err),
+      };
     } finally {
       probeInFlight.delete(url);
     }
@@ -92,6 +125,12 @@ async function probeStreamQuality(url) {
 
   probeInFlight.set(url, task);
   return task;
+}
+
+function probeFailureReason(result) {
+  const label =
+    PROBE_REASON_LABELS[result?.reason] || result?.reason || '探测失败';
+  return result?.detail ? `${label}：${result.detail}` : label;
 }
 
 function qualityLabel(info) {
@@ -375,20 +414,51 @@ function renderList() {
 
       // 小红书地址中没有清晰度信息，异步探测后回填真实分辨率/编码
       if (isXhsLiveCdnUrl(url)) {
-        qualityTag.textContent = '探测中…';
-        qualityTag.style.background = '#999';
-        probeStreamQuality(url).then((info) => {
+        const showProbing = () => {
+          qualityTag.textContent = '探测中…';
+          qualityTag.style.background = '#999';
+          qualityTag.classList.remove('probe-failed');
+        };
+        const applyResult = (result) => {
           if (!qualityTag.isConnected) return;
-          if (!info) {
-            qualityTag.textContent = '未知';
+          if (!result?.ok) {
+            qualityTag.textContent = '探测失败';
+            qualityTag.style.background = '#999';
+            qualityTag.title = `${probeFailureReason(result)}；点击重试`;
+            qualityTag.classList.add('probe-failed');
             return;
           }
+          const info = result.info;
           qualityTag.textContent = qualityLabel(info);
           qualityTag.style.background = qualityColor(info);
-          if (info.bit_rate) {
-            qualityTag.title = `${(info.bit_rate / 1e6).toFixed(1)} Mbps`;
-          }
+          qualityTag.classList.remove('probe-failed');
+          qualityTag.title = info?.bit_rate
+            ? `${(info.bit_rate / 1e6).toFixed(1)} Mbps`
+            : '';
+        };
+
+        showProbing();
+        const runProbe = (options) =>
+          probeStreamQuality(url, options).then((result) => {
+            // busy 属瞬时失败，延时自动重试一次，避免用户手动点
+            if (!result?.ok && result?.reason === 'busy') {
+              showProbing();
+              return new Promise((resolve) =>
+                setTimeout(
+                  () => resolve(probeStreamQuality(url, { ignoreCache: true })),
+                  PROBE_RETRY_DELAY_MS
+                )
+              );
+            }
+            return result;
+          });
+
+        qualityTag.addEventListener('click', () => {
+          probeCache.delete(url);
+          showProbing();
+          runProbe({ ignoreCache: true }).then(applyResult);
         });
+        runProbe().then(applyResult);
       }
 
       const typeTag = document.createElement('span');

@@ -181,6 +181,12 @@ body {
   font-weight: 700;
 }
 
+.quality-tag.probe-failed {
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 2px;
+}
+
 .stream-type {
   font-size: 11px;
   color: var(--gray-600);
