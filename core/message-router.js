@@ -2,8 +2,9 @@
 // 消息路由 — background onMessage 的唯一入口
 // 将 chrome.runtime.onMessage.addListener 内部的 switch 逻辑完整提取为独立模块
 
-import { ACTIONS } from '../lib/constants.js';
+import { ACTIONS, STORAGE_KEYS } from '../lib/constants.js';
 import { getState } from './state.js';
+import { finishRecording } from './badge.js';
 import { getConfig } from './config.js';
 import { handleContentStream } from './stream-detector.js';
 import {
@@ -76,10 +77,11 @@ export function handleMessage(request, sender, sendResponse) {
   }
 
   if (request.action === ACTIONS.CLEAR_COUNT) {
-    const s = getState();
-    s.detectedStreams = [];
-    chrome.action.setBadgeText({ text: '' });
-    chrome.storage.local.set({ streams: [] }, () => {
+    getState().detectedStreams = [];
+    // 清空列表是本轮状态重置：连同残留的录制中标记一起清，避免录制早已结束
+    // 却仍显示 HIGH（徽章与 status_ 标记统一由 badge 模块管理）。
+    finishRecording({ force: true }).catch(() => {});
+    chrome.storage.local.set({ [STORAGE_KEYS.STREAMS]: [] }, () => {
       sendResponse({ status: 'cleared' });
     });
     return true;

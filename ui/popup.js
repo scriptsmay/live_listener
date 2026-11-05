@@ -7,7 +7,11 @@ import {
 } from '../core/recording.js';
 import { fetchJson } from '../lib/http.js';
 import { isSupportedLiveRoomUrl } from '../lib/url.js';
-import { ACTIONS } from '../lib/constants.js';
+import {
+  ACTIONS,
+  RECORDING_STATUS_PREFIX,
+  RECORDING_STATUS_VALUE,
+} from '../lib/constants.js';
 
 const PLATFORM_LABELS = {
   kuaishou: '快手',
@@ -492,10 +496,10 @@ function renderList() {
       listDiv.appendChild(item);
 
       const currentBtn = item.querySelector('.btn-send');
-      const statusKey = `status_${url}`;
+      const statusKey = `${RECORDING_STATUS_PREFIX}${url}`;
 
       chrome.storage.local.get([statusKey], (res) => {
-        if (res[statusKey] === 'auto-recorded') {
+        if (res[statusKey] === RECORDING_STATUS_VALUE) {
           currentBtn.textContent = '✅ 录制中';
           currentBtn.disabled = true;
         }
@@ -801,13 +805,16 @@ document.getElementById('openOptions').addEventListener('click', () => {
   chrome.runtime.openOptionsPage();
 });
 
-// 监听 background.js 的录制被拒通知，清除过期的"录制中"标记
+// 监听后台的"录制被拒 / 录制结束"通知：status_ 标记已由 badge 模块统一清除，
+// 这里只需重绘列表，让"✅ 录制中"按钮恢复成可点击的"🚀 开始录制"。
 chrome.runtime.onMessage.addListener((request) => {
-  if (request.action === 'recording_rejected' && request.streamUrl) {
-    const statusKey = `status_${request.streamUrl}`;
+  if (request.action === ACTIONS.RECORDING_REJECTED && request.streamUrl) {
+    const statusKey = `${RECORDING_STATUS_PREFIX}${request.streamUrl}`;
     chrome.storage.local.remove(statusKey, () => {
       renderList();
     });
+  } else if (request.action === ACTIONS.RECORDING_ENDED) {
+    renderList();
   }
 });
 

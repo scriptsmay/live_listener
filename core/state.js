@@ -33,6 +33,7 @@
 
 import { STORAGE_KEYS, DANMAKU_HEALTH } from '../lib/constants.js';
 import { normalizeRoomUrl } from '../lib/url.js';
+import { refreshBadge } from './badge.js';
 
 // ===== 内存状态（Service Worker 重启后丢失，需从 storage 恢复） =====
 
@@ -466,11 +467,10 @@ async function restoreStateInternal() {
 
   if (Array.isArray(result[STORAGE_KEYS.STREAMS])) {
     state.detectedStreams = result[STORAGE_KEYS.STREAMS].slice(-100);
-    if (state.detectedStreams.length) {
-      chrome.action.setBadgeText({ text: state.detectedStreams.length.toString() });
-      chrome.action.setBadgeBackgroundColor({ color: '#ff5000' });
-    }
   }
+  // 徽章统一按 status_ 录制标记刷新：SW 重启后既能恢复录制中的 HIGH，
+  // 也不会在录制早已结束时残留一个过期的 HIGH。
+  refreshBadge().catch(() => {});
 
   if (result[STORAGE_KEYS.ACTIVE_RECORDING_ROOM]) {
     state.activeRecordingRoomUrl = result[STORAGE_KEYS.ACTIVE_RECORDING_ROOM];

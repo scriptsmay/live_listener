@@ -13,6 +13,7 @@ import { isEnvironmentRecording, sendToEnvironments } from './recording.js';
 import { syncBackendActiveRecordings } from './danmaku-session.js';
 import { POLL_ALARM_NAME } from '../lib/constants.js';
 import { createPollAlarm, clearPollAlarm } from './poll-schedule.js';
+import { finishRecording, syncRecordingBadge } from './badge.js';
 
 // 同一时刻只允许一次关注列表查询在跑。
 // 手动检测会在 alarm 触发的随机延迟窗口内插入，若不串行化，两次查询会并发
@@ -142,14 +143,18 @@ export function checkFollowingLivings({ manual = false } = {}) {
 async function runFollowingCheck({ manual }) {
   try {
     const state = getState();
+    const config = await getConfig();
+    const enabledEnvs = getEnabledEnvironments(config);
+    // 录制结束的徽章收尾不受 monitorEnabled 门控影响：即便用户关掉了关注
+    // 监听，上一场录制结束时 HIGH 也必须消失。放在最前面，且仅当仍有
+    // status_ 标记时才查后端（标记清掉后每轮直接跳过，无额外请求）。
+    await syncRecordingBadge(enabledEnvs).catch(() => {});
+
     if (!manual) {
       const { monitorEnabled } =
         await chrome.storage.sync.get('monitorEnabled');
       if (monitorEnabled === false) return { ran: false, reason: 'disabled' };
     }
-
-    const config = await getConfig();
-    const enabledEnvs = getEnabledEnvironments(config);
 
     // 同步服务端开启了“浏览器插件弹幕采集”的在播录制房间（快手 / 小红书），
     // 不受快手 Cookie、关注列表或单房间 activeRecordingRoomUrl 短路影响
@@ -175,7 +180,11 @@ async function runFollowingCheck({ manual }) {
         return { ran: false, reason: 'recording' };
       }
 
+      // 所有启用环境都确认该房间已不在录制：这是"录制结束"的权威判定。
+      // 除清理 activeRecordingRoomUrl 外，还要清掉徽章 HIGH 与 Popup 的
+      // status_ 录制中标记，否则录制结束后 HIGH 会一直挂着。
       clearActiveRecording();
+      finishRecording().catch(() => {});
     }
 
     const { kuaishouVisited } =

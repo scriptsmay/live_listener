@@ -18,6 +18,8 @@ import {
   closeAutoOpenedTab,
 } from './danmaku-session.js';
 import { setDanmakuEnabled } from './danmaku-switch.js';
+import { markRecordingStarted, finishRecording } from './badge.js';
+import { ACTIONS } from '../lib/constants.js';
 
 // ===== 内部辅助 =====
 
@@ -190,6 +192,7 @@ export async function sendToEnvironments(
   extra = {}
 ) {
   let activeCount = 0;
+  let rejected = false;
   const liveRoomId = extra.liveRoomId || getXiaohongshuLiveRoomId(roomUrl);
   const hostUserId = extra.hostUserId || (await getCachedXhsHost(liveRoomId));
 
@@ -250,12 +253,13 @@ export async function sendToEnvironments(
           result.data?.status ||
           `HTTP ${result.status}`;
         console.warn(`[Recording][${env.name}] 录制被拒绝: ${rejectionMsg}`);
+        rejected = true;
         closeAutoOpenedTab(roomUrl);
         deactivateDanmakuForRoom(roomUrl);
         // 通知 Popup 清除过期的录制中标记
         chrome.runtime
           .sendMessage({
-            action: 'recording_rejected',
+            action: ACTIONS.RECORDING_REJECTED,
             roomUrl,
             streamUrl: url,
             message: rejectionMsg,
@@ -272,8 +276,13 @@ export async function sendToEnvironments(
   }
 
   if (activeCount > 0) {
-    chrome.action.setBadgeText({ text: 'HIGH' });
-    chrome.storage.local.set({ [`status_${url}`]: 'auto-recorded' });
+    // 徽章与 status_ 标记统一由 badge 模块管理，录制结束时会自动收尾。
+    // persistActiveRecording(roomUrl) 已在上面的成功分支中执行。
+    await markRecordingStarted(url);
+  } else if (rejected) {
+    // 所有启用环境都拒绝 / 无成功：清掉上一场可能残留的录制中标记与徽章，
+    // 避免"后端已停、HIGH 还挂着"。放在循环末尾可避免与成功分支抢写。
+    await finishRecording().catch(() => {});
   }
   return activeCount;
 }

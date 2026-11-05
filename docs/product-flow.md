@@ -93,10 +93,13 @@ background.js 中维护两个核心 Map：`danmakuSessions`（会话状态）和
 **自动标签页管理**：`ensureDanmakuTab()` 通过 `chrome.tabs.create({ active: false })` 创建后台标签页，并在 `autoOpenedTabs` Map 中记录 roomUrl 到 tabId 的映射。如果该房间已有打开的标签页（用户手动打开或之前自动创建且仍存在），不会重复创建。录制结束后，`closeAutoOpenedTab()` 会关闭扩展自动打开的标签页——用户手动打开的标签页不受影响。
 
 **录制状态轮询（兜底机制）**：`checkRecordingAndUpdateSession()` 遍历所有启用环境，查询各自的 `/api/notify/status` 接口，用于处理后端侧状态变化（如后端异常中断、外部触发的录制结束等主动通知无法覆盖的场景）。如果任一环境返回 `status: "recording"` 或 `"paused"`，则：
+
 - 从未发送切换到发送：`isSending=true`，后续 flush 开始实际发送弹幕。
-- 从发送切换到未发送：先 flush 剩余缓冲，再 `isSending=false`，后续 flush 只缓冲不发送。同时调用 `closeAutoOpenedTab()` 关闭自动打开的后台标签页。
+- 从发送切换到未发送：先 flush 剩余缓冲，再 `isSending=false`，后续 flush 只缓冲不发送。同时调用 `closeAutoOpenedTab()` 关闭自动打开的后台标签页；当没有其它仍在发送的会话时，调用 `finishRecording()` 收尾图标徽章与录制标记。
 
 触发时机包括：`danmakuReady` 立即检查、定时器每 10 秒周期检查、`danmakuBatch` 自动创建时检查。
+
+**图标徽章与录制标记**：徽章（`chrome.action` badge）与 `status_<streamUrl>` 录制中标记由 `core/badge.js` 统一管理，以持久化的 `status_` 标记为"是否有自动录制任务"的唯一事实源。自动录制成功时 `markRecordingStarted()` 写入标记并显示 `HIGH`；录制结束时 `finishRecording()` 清掉全部 `status_` 标记、清空徽章，并广播 `recording_ended` 让 Popup 把"✅ 录制中"按钮重绘回可点击状态。录制结束的检测有三条互补路径：① 关注轮询每轮开头用 `syncRecordingBadge()` 查询后端 `active=true&include_all=true` 权威列表（不受 `monitorEnabled` 门控影响，空列表即收尾，并有 90 秒启动宽限窗口避免新录制被误清）；② 弹幕状态 10 秒轮询发现从发送转为未发送时即时收尾；③ 关注轮询确认 `activeRecordingRoomUrl` 已不在录制时即时收尾。Service Worker 重启时 `restoreState()` 调用 `refreshBadge()` 按标记恢复显示。用户点"清空列表"也会走 `finishRecording({ force: true })` 无条件重置。
 
 **批量发送**：`flushDanmakuBatch()` 每 5 秒由定时器触发。如果 `isSending=false`，直接跳过（保留缓冲数据）。如果 `isSending=true`，从缓冲区取出所有事件，经 `normalizeDanmakuBatch()` 标准化（统一字段、计算相对时间戳），再经 `filterDanmakuEvents()` 过滤（当前默认排除点赞），最后 POST 到所有启用环境的 `/api/danmaku/batch` 接口。
 
@@ -108,13 +111,13 @@ background.js 中维护两个核心 Map：`danmakuSessions`（会话状态）和
 
 Popup 分为左侧直播流列表和右侧状态面板。
 
-左侧展示已检测到的直播流，每条显示标题、画质标签、直播间地址、捕获时间和"开始录制"按钮。手动录制会推送到所有启用环境，推送前先查询状态避免重复发送。"清空列表"按钮可清除所有检测记录。
+左侧展示已检测到的直播流，每条显示标题、画质标签、直播间地址、捕获时间和"开始录制"按钮。手动录制会推送到所有启用环境，推送前先查询状态避免重复发送。自动录制成功后按钮显示"✅ 录制中"并禁用，录制结束（后台广播 `recording_ended`）或被后端拒绝（`recording_rejected`）时重绘恢复为"🚀 开始录制"。"清空列表"按钮可清除所有检测记录，同时重置图标徽章与录制标记。
 
 右侧上方展示后台监听关注列表的开关状态、上次请求时间和结果。开关控制 `monitorEnabled`，切换时通知 Service Worker 重新检测。
 
 状态面板下方是"⚡ 立即检测"按钮：点击后 Service Worker 先 `chrome.alarms.clear` 取消当前轮询计时，再 `chrome.alarms.create` 重建 alarm（下次触发时间重置为 now + 1 分钟），随后立即执行一次关注列表查询。手动查询跳过 `monitorEnabled` 判定和 2~6 秒防风控随机延迟，但保留"已在录制中则跳过"和"需访问过快手"等前置守卫；这些守卫不满足时按钮会显示具体原因而不是静默失败。查询与 alarm 触发的查询共用串行守卫 `_checkInFlight`，若已有查询在跑则复用它返回的结果，不会并发请求快手接口。手动检测会清空 `notifiedRooms`（意图是重新过一遍开播列表，让已通知过的房间重新触发通知），但不会清 `activeRecordingRoomUrl`（那是真实录制状态）。
 
-右侧下方是弹幕采集状态面板，每 3 秒自动刷新，展示所有活跃的弹幕会话。每个会话显示三种状态之一：**采集中**（绿色，`isSending=true`，弹幕正在向后端发送）、**等待录制**（橙色，会话已创建但录制尚未开始，弹幕在缓冲中）、**已停止**（红色，会话正在关闭）。统计行显示已采集事件数、缓冲区大小、运行时长和后台标签页状态。当会话处于发送状态但已采集事件数为零时，面板会显示引导提示，点击可跳转到对应直播间排查采集脚本是否正常工作。当后端拒绝录制时，Popup 通过 `recording_rejected` 消息自动清除该直播间过期的"录制中"按钮标记。
+右侧下方是弹幕采集状态面板，每 3 秒自动刷新，展示所有活跃的弹幕会话。每个会话显示三种状态之一：**采集中**（绿色，`isSending=true`，弹幕正在向后端发送）、**等待录制**（橙色，会话已创建但录制尚未开始，弹幕在缓冲中）、**已停止**（红色，会话正在关闭）。统计行显示已采集事件数、缓冲区大小、运行时长和后台标签页状态。当会话处于发送状态但已采集事件数为零时，面板会显示引导提示，点击可跳转到对应直播间排查采集脚本是否正常工作。当后端拒绝录制时，Popup 通过 `recording_rejected` 消息清除该直播间过期的"录制中"按钮标记；当录制结束时，通过 `recording_ended` 消息重绘整个列表。
 
 ## Options 设置
 
@@ -134,9 +137,9 @@ Options 页面顶部先渲染一张只读的"关注列表轮询"卡片，展示�
 
 **chrome.storage.sync** 存储用户配置：环境列表（含 baseUrl、enabled、followedAuthors）和全局 monitorEnabled 开关。
 
-**chrome.storage.local** 存储运行时状态：已检测流列表 `streams`（最多 100 条）、已通知过的直播间 `notifiedRooms`、当前录制中的直播间 `activeRecordingRoomUrl`、上次关注列表请求结果 `lastReqStatus`。
+**chrome.storage.local** 存储运行时状态：已检测流列表 `streams`（最多 100 条）、已通知过的直播间 `notifiedRooms`、当前录制中的直播间 `activeRecordingRoomUrl`、上次关注列表请求结果 `lastReqStatus`，以及按流地址散落的 `status_<streamUrl>` 自动录制标记（值 `auto-recorded`）与其启动时间戳 `recordingBadgeStartedAt`。
 
-Service Worker 启动时从 local storage 恢复 `streams`、`notifiedRooms` 和 `activeRecordingRoomUrl`，确保 MV3 Service Worker 重启后关键状态不丢失。
+Service Worker 启动时从 local storage 恢复 `streams`、`notifiedRooms` 和 `activeRecordingRoomUrl`，确保 MV3 Service Worker 重启后关键状态不丢失；图标徽章则由 `refreshBadge()` 按 `status_` 标记重建，不随内存态丢失。
 
 ## 后端接口协议
 
@@ -159,6 +162,7 @@ Service Worker 启动时从 local storage 恢复 `streams`、`notifiedRooms` 和
 请求：`GET {baseUrl}/api/notify/status?url={roomUrl}`
 
 响应：
+
 ```json
 {
   "exists": true,

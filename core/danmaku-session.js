@@ -29,6 +29,7 @@ import { normalizeDanmakuBatch, filterDanmakuEvents } from '../danmaku/parser.js
 // 模块初始化阶段不触发，函数声明会被提升，因此运行时安全。
 import { isEnvironmentRecording } from './recording.js';
 import { autoDisableDanmakuIfIdle, setDanmakuEnabled } from './danmaku-switch.js';
+import { finishRecording } from './badge.js';
 
 export const DANMAKU_MAX_BUFFER_SIZE = 5000; // 缓冲区最大事件数（防止内存泄漏）
 
@@ -909,6 +910,12 @@ export async function checkRecordingAndUpdateSession(roomUrl) {
     await flushDanmakuBatch(roomUrl).catch(() => {});
     session.isSending = false;
     await closeAutoOpenedTab(roomUrl);
+    // 10 秒轮询是用户感知"录制结束"最快的路径。仅当没有其它仍在发送的
+    // 会话时才收尾徽章，避免多房间录制时提前清掉仍在进行任务的 HIGH。
+    const othersSending = [...state.danmakuSessions.values()].some(
+      (other) => other !== session && other.isSending
+    );
+    if (!othersSending) finishRecording().catch(() => {});
   }
 
   // 后端确认录制中时，顺带做一次节流的自动标签页健康探测（D3）。
