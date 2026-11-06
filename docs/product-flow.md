@@ -123,7 +123,11 @@ Popup 分为左侧直播流列表和右侧状态面板。
 
 Options 页面顶部先渲染一张只读的"关注列表轮询"卡片，展示轮询间隔（取自 `core/config.js` 的 `POLL_INTERVAL_MINUTES`）、下次请求时间（取自 `chrome.alarms.get()` 的 `scheduledTime`）以及秒级倒计时。倒计时在页面本地每秒重算，并每 10 秒向后台重新拉取一次 `scheduledTime`——手动检测或 SW 重启都会重建 alarm，时间会变。卡片还会显示 alarm 是否已注册（"运行中"/"未注册"）。这些数据通过 `ACTIONS.GET_POLL_SCHEDULE` 消息从 `core/poll-schedule.js` 获取；Options 页面不直接 import `following-poll.js`，否则会把 `recording.js`、`danmaku-session.js` 一并拉进页面上下文并触发它们模块顶层的监听器注册。
 
-其下是每个环境的独立配置卡片，包含启用开关、Base URL 输入框和关注主播 textarea。保存时验证 Base URL 格式（必须是 http/https）和 manifest 权限声明，通过后写入 `chrome.storage.sync`，并通知 Service Worker 重新检测。
+其下是每个环境的独立配置卡片，包含启用开关、连通性状态行、Base URL 输入框和关注主播 textarea。保存时验证 Base URL 格式（必须是 http/https）和 manifest 权限声明，通过后写入 `chrome.storage.sync`，并通知 Service Worker 重新检测。
+
+**环境连通性提示**：每张卡片顶部有一行只读状态（`lib/health.js` 的 `checkEnvironmentHealth()`）。仅对已启用环境探测 `GET {baseUrl}/api/health`——该端点在服务端鉴权白名单内、无需登录，返回 `ok`/`db`/`redis`/`version`。由此区分三态：**已连接**（HTTP 200 + `ok:true`，标签带版本号）、**服务异常**（HTTP 503 或依赖未就绪）、**无法连接**（网络不可达 / `Failed to fetch` / 非 2xx，detail 给出原因）；未启用环境显示「未启用」且完全不发请求。打开设置页时自动检测一次，切换启用开关立即重检，修改地址带 600ms 防抖重检；检测带序号，快速改动时只认最后一次结果，避免旧响应覆盖新状态。这是纯只读展示，不参与配置写入与录制决策。
+
+**画质探测的多环境处理**：Popup 对小红书 CDN 流的清晰度探测（`POST {baseUrl}/api/notify/probe_stream`）遍历**所有**已启用环境，任一后端返回成功即用其结果，全部失败才显示「探测失败」并在 detail 标注已尝试的环境数。这避免了只取第一个启用环境时，因该环境暂时不可达而误报失败（例如生产后端未启动但开发环境可用）。
 
 ## 录制优化策略
 

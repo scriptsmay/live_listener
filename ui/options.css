@@ -182,6 +182,79 @@ body {
   accent-color: var(--primary);
 }
 
+/* ========== 环境连通性状态 ========== */
+
+.env-connectivity {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 10px 12px;
+  margin-bottom: 16px;
+  border-radius: 10px;
+  background: var(--gray-50);
+  border: 1px solid var(--gray-100);
+  font-size: 13px;
+}
+
+.env-status-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--gray-400);
+}
+
+.env-status-text {
+  font-weight: 700;
+  color: var(--gray-600);
+}
+
+.env-status-detail {
+  color: var(--gray-400);
+  font-size: 12px;
+}
+
+.env-connectivity[data-state='connected'] .env-status-dot {
+  background: #16a34a;
+}
+.env-connectivity[data-state='connected'] .env-status-text {
+  color: #16a34a;
+}
+
+.env-connectivity[data-state='degraded'] .env-status-dot {
+  background: #f59e0b;
+}
+.env-connectivity[data-state='degraded'] .env-status-text {
+  color: #b45309;
+}
+
+.env-connectivity[data-state='unreachable'] .env-status-dot {
+  background: #dc2626;
+}
+.env-connectivity[data-state='unreachable'] .env-status-text {
+  color: #dc2626;
+}
+
+.env-connectivity[data-state='checking'] .env-status-dot {
+  background: var(--gray-400);
+  animation: env-status-pulse 1s ease-in-out infinite;
+}
+
+.env-connectivity[data-state='disabled'] {
+  opacity: 0.7;
+}
+
+@keyframes env-status-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
 .env-field {
   margin-bottom: 18px;
 }

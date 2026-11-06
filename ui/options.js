@@ -1,5 +1,6 @@
 import { CONFIG_VERSION, DEFAULT_ENVIRONMENTS, getConfig } from '../core/config.js';
 import { ACTIONS } from '../lib/constants.js';
+import { checkEnvironmentHealth } from '../lib/health.js';
 
 // ========== 关注列表轮询状态 ==========
 //
@@ -138,12 +139,59 @@ function renderEnvCard(env) {
     '531916795（小红书号）\n5c2f2f8c000000000701d3dd（用户ID）\n王者荣耀女子公开赛（主播昵称）\n昵称|531916795（昵称|ID，可选）';
   xhsAuthors.value = (env.xiaohongshuAuthors || []).join('\n');
 
+  // 连通性状态：仅对已启用环境探测，未启用时提示不检测，避免误导
+  const connectivity = document.createElement('div');
+  connectivity.className = 'env-connectivity';
+
+  const statusDot = document.createElement('span');
+  statusDot.className = 'env-status-dot';
+
+  const statusText = document.createElement('span');
+  statusText.className = 'env-status-text';
+
+  const statusDetail = document.createElement('span');
+  statusDetail.className = 'env-status-detail';
+
+  connectivity.append(statusDot, statusText, statusDetail);
+
   card.append(
     header,
+    connectivity,
     createEnvField('服务地址（Base URL）', baseUrl),
     createEnvField('关注的主播（快手，每行一个）', authors),
     createEnvField('小红书监控（每行一个：小红书号 / 用户ID / 主页链接）', xhsAuthors)
   );
+
+  // 每次检测带一个序号，快速改动地址时只认最后一次结果，避免旧响应覆盖
+  let checkSeq = 0;
+  const setStatus = (state, label, detail) => {
+    connectivity.dataset.state = state;
+    statusText.textContent = label;
+    statusDetail.textContent = detail || '';
+  };
+
+  const runCheck = async () => {
+    const seq = ++checkSeq;
+    if (!enabled.checked) {
+      setStatus('disabled', '未启用', '启用后自动检测后端连通性');
+      return;
+    }
+    setStatus('checking', '检测中…', '');
+    const result = await checkEnvironmentHealth({ baseUrl: baseUrl.value });
+    if (seq !== checkSeq) return; // 期间又触发了新检测，丢弃过期结果
+    setStatus(result.state, result.label, result.detail);
+  };
+
+  // 打开设置页、切换启用、修改地址时重新检测
+  enabled.addEventListener('change', runCheck);
+  // 输入防抖：避免每敲一个字符就打一次后端
+  let debounceTimer = null;
+  baseUrl.addEventListener('input', () => {
+    clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(runCheck, 600);
+  });
+  runCheck();
+
   return card;
 }
 

@@ -19,12 +19,15 @@ Manifest V3 Chrome 扩展，用于监测快手与小红书直播流、采集实�
 - `关注的主播（快手）`：每行一个主播名。
 - `小红书监控`：每行一个监控对象，支持小红书号（`531916795`）、24 位用户 ID、主页/直播间链接、`昵称|ID` 或纯昵称。推荐使用用户 ID（稳定身份）。
 - `启用`：只有启用环境才会接收自动推送。
+- `连通性`：每张环境卡片顶部显示该环境后端的可达性——已启用时自动探测 `GET {baseUrl}/api/health`，显示「已连接（含版本号）」/「服务异常（依赖未就绪）」/「无法连接」；未启用时显示「未启用」且不发请求。切换启用开关或修改地址会自动重新检测（地址输入有 600ms 防抖）。
 
 接口后缀由扩展固定拼接：
 
 - 录制接口：`POST {baseUrl}/api/notify/live_download`
 - 状态接口：`GET {baseUrl}/api/notify/status?url={roomUrl}`（单房间）与 `GET {baseUrl}/api/notify/status?active=true`（服务端活跃弹幕采集任务列表）
 - 弹幕接口：`POST {baseUrl}/api/danmaku/batch`
+- 连通性：`GET {baseUrl}/api/health`（免鉴权，返回 `ok`/`db`/`redis`/`version`）
+- 画质探测：`POST {baseUrl}/api/notify/probe_stream`，Popup 会遍历**所有已启用环境**，任一成功即用其结果，全部失败才显示「探测失败」
 
 ## 小红书开播发现（被动嗅探）
 

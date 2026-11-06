@@ -55,6 +55,8 @@ const PROBE_REASON_LABELS = {
   unsupported_url: '地址不支持',
   ffprobe_unavailable: 'ffprobe 不可用',
   parse_failed: '解析失败',
+  network_error: '后端不可达',
+  no_environment: '无可用环境',
 };
 
 function isXhsLiveCdnUrl(url) {
@@ -89,32 +91,60 @@ async function probeStreamQuality(url, { ignoreCache = false } = {}) {
   const task = (async () => {
     try {
       const config = await getConfig();
-      const env = config.environments.find(
+      // 遍历所有启用环境：任一后端探测成功即用其结果，避免只取第一个环境时
+      // 因该环境暂时不可达而误报失败（多环境开关下旧实现只看生产）。
+      const envs = config.environments.filter(
         (item) => item.enabled && probeApiUrl(item)
       );
-      if (!env) return { ok: false, reason: 'no_environment' };
-      const result = await fetchJson(
-        probeApiUrl(env),
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ url }),
-        },
-        PROBE_FETCH_TIMEOUT_MS
-      );
-      const data = result.data;
-      if (!result.ok || data?.status !== 'ok') {
-        const reason =
-          typeof data?.message === 'string'
-            ? data.message
-            : `http_${result.status}`;
-        const detail = typeof data?.detail === 'string' ? data.detail : '';
-        console.warn('[Popup] 画质探测失败:', url, reason, detail);
-        return { ok: false, reason, detail };
+      if (!envs.length) return { ok: false, reason: 'no_environment' };
+
+      let lastFailure = null;
+      for (const env of envs) {
+        try {
+          const result = await fetchJson(
+            probeApiUrl(env),
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ url }),
+            },
+            PROBE_FETCH_TIMEOUT_MS
+          );
+          const data = result.data;
+          if (result.ok && data?.status === 'ok') {
+            const info = data.data;
+            probeCache.set(url, { ok: true, info });
+            return { ok: true, info };
+          }
+          const reason =
+            typeof data?.message === 'string'
+              ? data.message
+              : `http_${result.status}`;
+          const detail = typeof data?.detail === 'string' ? data.detail : '';
+          lastFailure = { ok: false, reason, detail };
+          console.warn(
+            `[Popup][${env.name}] 画质探测失败:`,
+            url,
+            reason,
+            detail
+          );
+        } catch (err) {
+          lastFailure = {
+            ok: false,
+            reason: 'network_error',
+            detail: String(err?.message || err),
+          };
+          console.warn(`[Popup][${env.name}] 画质探测异常:`, url, err);
+        }
       }
-      const info = data.data;
-      probeCache.set(url, { ok: true, info });
-      return { ok: true, info };
+      // 全部启用环境都失败时，附带环境数便于判断是后端问题还是单点故障
+      const failure = lastFailure || {
+        ok: false,
+        reason: 'network_error',
+        detail: '所有环境均不可用',
+      };
+      const multi = envs.length > 1 ? `（已尝试 ${envs.length} 个环境）` : '';
+      return { ...failure, detail: `${failure.detail}${multi}` };
     } catch (err) {
       console.warn('[Popup] 画质探测异常:', url, err);
       return {
