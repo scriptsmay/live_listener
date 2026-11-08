@@ -372,7 +372,7 @@ body {
 .status-detail {
   font-size: 11px;
   color: var(--gray-400);
-  margin-bottom: 20px;
+  margin-bottom: 12px;
 }
 
 .info-section {
@@ -412,6 +412,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  margin-top: 14px;
   margin-bottom: 16px;
   padding-top: 14px;
   border-top: 1px solid var(--gray-100);
@@ -723,31 +724,33 @@ body {
   display: none;
 }
 
-/* ========== 立即检测按钮 ========== */
+/* ========== 立即检测按钮（主操作，首屏常驻） ========== */
 
 .btn-check-now {
   width: 100%;
-  margin-top: 12px;
-  padding: 10px 12px;
-  border: 2px solid var(--primary);
+  margin-top: 4px;
+  padding: 11px 12px;
+  border: none;
   border-radius: 12px;
-  background: #fff;
-  color: var(--primary-dark);
+  background: linear-gradient(135deg, var(--primary-light) 0%, var(--primary) 100%);
+  color: #fff;
   font-size: 13px;
   font-weight: 700;
+  letter-spacing: 0.3px;
   cursor: pointer;
+  box-shadow: 0 4px 12px rgba(255, 140, 0, 0.3);
   transition: all 0.2s;
 }
 
 .btn-check-now:hover:not(:disabled) {
-  background: var(--primary);
-  color: #fff;
+  background: linear-gradient(135deg, var(--primary) 0%, var(--primary-dark) 100%);
   transform: translateY(-1px);
-  box-shadow: 0 4px 12px rgba(255, 140, 0, 0.25);
+  box-shadow: 0 6px 16px rgba(255, 140, 0, 0.4);
 }
 
 .btn-check-now:active:not(:disabled) {
   transform: translateY(0);
+  box-shadow: 0 2px 6px rgba(255, 140, 0, 0.3);
 }
 
 .btn-check-now:disabled {
